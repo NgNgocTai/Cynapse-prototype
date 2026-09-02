@@ -1,17 +1,17 @@
 ---
-- name: {{action_name}}
-  hosts: {{host_group}}
-{{#if become}}
+- name: "{{ action_name }}"
+  hosts: "{{ target_group }}"
+{% if become %}
   become: true
-{{/if}}
+{% endif %}
   gather_facts: false
   tasks:
     - name: Execute command
-      ansible.builtin.shell: {{command}}
-{{#if working_directory}}
+      ansible.builtin.shell: "{{ command }}"
+{% if working_directory %}
       args:
-        chdir: {{working_directory}}
-{{/if}}
+        chdir: "{{ working_directory }}"
+{% endif %}
       register: command_result
       changed_when: true
 
@@ -19,17 +19,17 @@
       ansible.builtin.debug:
         msg:
           - "Command executed successfully"
-          - "Return code: \{{ command_result.rc }}"
+          - "Return code: {{ command_result.rc }}"
           - "STDOUT:"
-          - "\{{ command_result.stdout }}"
-{{#if command_result.stderr}}
+          - "{{ command_result.stdout }}"
+{% if command_result.stderr %}
           - "STDERR:"
-          - "\{{ command_result.stderr }}"
-{{/if}}
+          - "{{ command_result.stderr }}"
+{% endif %}
 
     - name: Verify command succeeded
       ansible.builtin.assert:
         that:
           - command_result.rc == 0
-        fail_msg: "Command failed with return code \{{ command_result.rc }}"
+        fail_msg: "Command failed with return code {{ command_result.rc }}"
         success_msg: "Command completed successfully"

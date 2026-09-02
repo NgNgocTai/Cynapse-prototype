@@ -1,4 +1,3 @@
-import Handlebars from 'handlebars';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -12,73 +11,30 @@ function getTemplates() {
   return JSON.parse(content);
 }
 
-// Register Handlebars helpers
-Handlebars.registerHelper('eq', function(a, b, options) {
-  return a === b ? options.fn(this) : options.inverse(this);
-});
-
-Handlebars.registerHelper('ne', function(a, b, options) {
-  return a !== b ? options.fn(this) : options.inverse(this);
-});
-
-Handlebars.registerHelper('gt', function(a, b, options) {
-  return a > b ? options.fn(this) : options.inverse(this);
-});
-
-Handlebars.registerHelper('lt', function(a, b, options) {
-  return a < b ? options.fn(this) : options.inverse(this);
-});
-
 /**
- * Generate YAML from template
+ * Get raw playbook source for a template (unrendered Jinja2).
+ * NOTE: We do NOT render/compile this file. The real Ansible engine on the
+ * AWX execution node evaluates the Jinja2 expressions ({{ }}, {% if %}) at
+ * job-run time using the extra_vars passed via the launch API. This function
+ * exists only to show the BO what the underlying playbook looks like.
  * @param {string} templateId - Template ID (e.g. "RESTART_SERVICE")
- * @param {object} params - Parameters to fill into template
- * @returns {string} Generated YAML content
+ * @returns {string} Raw playbook file content (Jinja2, unrendered)
  */
-export function generateYAML(templateId, params) {
+export function getPlaybookSource(templateId) {
   const templates = getTemplates();
   const template = templates.templates.find(t => t.id === templateId);
-  
+
   if (!template) {
     throw new Error(`Template not found: ${templateId}`);
   }
 
-  // Validate required parameters
-  for (const param of template.parameters) {
-    if (param.required && !params[param.name]) {
-      // Check if there's a default value
-      if (param.default === undefined) {
-        throw new Error(`Missing required parameter: ${param.name}`);
-      }
-      // Use default value
-      params[param.name] = param.default;
-    }
-  }
-
-  // Apply defaults for missing optional parameters
-  for (const param of template.parameters) {
-    if (param.default !== undefined && params[param.name] === undefined) {
-      params[param.name] = param.default;
-    }
-  }
-
-  // Load YAML template file
   const templatePath = path.join(__dirname, 'templates', 'yaml', template.yamlTemplate);
-  
+
   if (!fs.existsSync(templatePath)) {
     throw new Error(`Template file not found: ${template.yamlTemplate}`);
   }
 
-  const templateContent = fs.readFileSync(templatePath, 'utf-8');
-  
-  // Compile and execute template
-  try {
-    const compiled = Handlebars.compile(templateContent, { noEscape: true });
-    const yaml = compiled(params);
-    return yaml;
-  } catch (error) {
-    throw new Error(`Failed to generate YAML: ${error.message}`);
-  }
+  return fs.readFileSync(templatePath, 'utf-8');
 }
 
 /**
@@ -98,16 +54,18 @@ export function getAvailableTemplates() {
 export function getTemplate(templateId) {
   const templates = getTemplates();
   const template = templates.templates.find(t => t.id === templateId);
-  
+
   if (!template) {
     throw new Error(`Template not found: ${templateId}`);
   }
-  
+
   return template;
 }
 
 /**
- * Validate parameters against template schema
+ * Validate parameters against template schema.
+ * Mutates `params` in place to fill in defaults for missing optional/required
+ * fields, matching the previous behavior relied on by callers.
  * @param {string} templateId - Template ID
  * @param {object} params - Parameters to validate
  * @returns {object} { valid: boolean, errors: string[] }
@@ -117,14 +75,17 @@ export function validateParameters(templateId, params) {
   const errors = [];
 
   for (const param of template.parameters) {
+    // Apply defaults for missing values (required or optional)
+    if (params[param.name] === undefined && param.default !== undefined) {
+      params[param.name] = param.default;
+    }
+
     const value = params[param.name];
 
     // Check required
     if (param.required && (value === undefined || value === null || value === '')) {
-      if (param.default === undefined) {
-        errors.push(`Parameter '${param.name}' is required`);
-        continue;
-      }
+      errors.push(`Parameter '${param.name}' is required`);
+      continue;
     }
 
     // Skip validation if value is not provided and not required
@@ -176,14 +137,17 @@ export function validateParameters(templateId, params) {
 }
 
 /**
- * Preview YAML generation without creating action
+ * Preview the playbook for a template: validates params, then returns the
+ * RAW (unrendered) Jinja2 playbook source, plus a note clarifying that the
+ * {{ }} values shown are placeholders evaluated by Ansible at real run time,
+ * not a pre-filled build.
  * @param {string} templateId - Template ID
- * @param {object} params - Parameters
- * @returns {object} { yaml: string, valid: boolean, errors: string[] }
+ * @param {object} params - Parameters (validated but not injected into YAML)
+ * @returns {object} { yaml: string, valid: boolean, errors: string[], note?: string }
  */
 export function previewYAML(templateId, params) {
   const validation = validateParameters(templateId, params);
-  
+
   if (!validation.valid) {
     return {
       yaml: null,
@@ -193,11 +157,12 @@ export function previewYAML(templateId, params) {
   }
 
   try {
-    const yaml = generateYAML(templateId, params);
+    const yaml = getPlaybookSource(templateId);
     return {
       yaml,
       valid: true,
-      errors: []
+      errors: [],
+      note: 'Đây là playbook gốc (Jinja2, chưa render). Các giá trị {{ }} sẽ được Ansible điền tại thời điểm chạy thật trên AWX bằng extra_vars bạn đã nhập trên form — đây không phải bản build sẵn.'
     };
   } catch (error) {
     return {

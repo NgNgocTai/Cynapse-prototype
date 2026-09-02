@@ -1,0 +1,58 @@
+---
+- name: "{{ action_name }}"
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  tasks:
+{% if notification_type == "telegram" %}
+    - name: Send Telegram notification
+      ansible.builtin.uri:
+        url: "https://api.telegram.org/bot{{ lookup('env', 'TELEGRAM_BOT_TOKEN') }}/sendMessage"
+        method: POST
+        body_format: json
+        body:
+          chat_id: "{{ recipient }}"
+          text: "[{{ severity }}] {{ message }}"
+          parse_mode: "HTML"
+        status_code: 200
+      register: telegram_result
+
+    - name: Verify Telegram notification sent
+      ansible.builtin.debug:
+        msg: "Telegram notification sent successfully to {{ recipient }}"
+{% endif %}
+
+{% if notification_type == "email" %}
+    - name: Send email notification
+      ansible.builtin.mail:
+        host: "{{ lookup('env', 'SMTP_HOST') }}"
+        port: "{{ lookup('env', 'SMTP_PORT') | default(587) }}"
+        username: "{{ lookup('env', 'SMTP_USERNAME') }}"
+        password: "{{ lookup('env', 'SMTP_PASSWORD') }}"
+        to: "{{ recipient }}"
+        subject: "[Synapse] {{ severity }} - Automation Notification"
+        body: "{{ message }}"
+      register: email_result
+
+    - name: Verify email sent
+      ansible.builtin.debug:
+        msg: "Email notification sent successfully to {{ recipient }}"
+{% endif %}
+
+{% if notification_type == "webhook" %}
+    - name: Send webhook notification
+      ansible.builtin.uri:
+        url: "{{ recipient }}"
+        method: POST
+        body_format: json
+        body:
+          severity: "{{ severity }}"
+          message: "{{ message }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+        status_code: [200, 201, 202, 204]
+      register: webhook_result
+
+    - name: Verify webhook notification sent
+      ansible.builtin.debug:
+        msg: "Webhook notification sent successfully to {{ recipient }}"
+{% endif %}

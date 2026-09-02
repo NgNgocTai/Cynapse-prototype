@@ -1624,8 +1624,9 @@ async function openActionBuilderModal() {
                     <div id="yamlPreviewStep" style="display: none;">
                         <button onclick="backToParameterForm()" style="margin-bottom: 1rem; padding: 0.5rem 1rem; background: #374151; border: none; color: white; border-radius: 0.375rem; cursor: pointer;">← Back to Edit</button>
                         <h3 style="margin-bottom: 1rem;">YAML Preview</h3>
+                        <div id="yamlPreviewNote" style="display: none; background: #3730a3; color: #e0e7ff; padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-size: 0.875rem;"></div>
                         <div style="background: #1f2937; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
-                            <div style="color: #9ca3af; font-size: 0.875rem; margin-bottom: 0.5rem;">Generated Ansible Playbook:</div>
+                            <div style="color: #9ca3af; font-size: 0.875rem; margin-bottom: 0.5rem;">Playbook gốc (Jinja2, chưa render):</div>
                             <pre id="yamlPreviewCode" class="code-block" style="max-height: 400px; overflow-y: auto; margin: 0;"></pre>
                         </div>
                         <div style="display: flex; gap: 1rem;">
@@ -1787,6 +1788,14 @@ async function previewActionYAML() {
         document.getElementById('parameterFormStep').style.display = 'none';
         document.getElementById('yamlPreviewStep').style.display = 'block';
         document.getElementById('yamlPreviewCode').textContent = result.yaml;
+
+        const noteEl = document.getElementById('yamlPreviewNote');
+        if (result.note) {
+            noteEl.textContent = 'ℹ️ ' + result.note;
+            noteEl.style.display = 'block';
+        } else {
+            noteEl.style.display = 'none';
+        }
         
     } catch (error) {
         alert('Failed to preview YAML: ' + error.message);

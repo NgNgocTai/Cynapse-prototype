@@ -13,7 +13,7 @@ import {
   listBlueprints, getBlueprint, addBlueprint, updateBlueprint, deleteBlueprint
 } from './catalogStore.js';
 import {
-  generateYAML,
+  getPlaybookSource,
   getAvailableTemplates,
   getTemplate,
   validateParameters,
@@ -103,11 +103,21 @@ app.post('/api/actions/from-template', (req, res) => {
       });
     }
     
-    // Get template metadata
+    // Get template metadata (carries the real awxJobTemplateId mapping —
+    // see backend/templates/actionTemplates.json. Each template must map to
+    // its own AWX Job Template; never hardcode a single ID for every action.)
     const template = getTemplate(templateId);
-    
-    // Generate YAML
-    const yaml = generateYAML(templateId, params);
+
+    if (!template.awxJobTemplateId || template.awxJobTemplateId <= 0) {
+      return res.status(400).json({
+        error: `Template ${templateId} chưa được cấu hình awxJobTemplateId. Cập nhật backend/templates/actionTemplates.json sau khi tạo Job Template thật trên AWX.`
+      });
+    }
+
+    // Raw playbook source, for reference/audit only — NOT rendered, NOT sent
+    // to AWX. AWX pulls the real playbook from Git; we only ever send params
+    // as extra_vars at execute time (see /api/plans/:id/execute below).
+    const playbookSource = getPlaybookSource(templateId);
     
     // Create action object
     const actionId = params.action_name
@@ -124,8 +134,8 @@ app.post('/api/actions/from-template', (req, res) => {
       riskDefault: riskDefault || 'MEDIUM',
       implementation: {
         provider: 'ansible',
-        awxJobTemplateId: 10, // Hardcode tạm ID 10 để chạy mock AWX mượt mà
-        playbook: yaml
+        awxJobTemplateId: template.awxJobTemplateId,
+        playbookRef: template.yamlTemplate
       },
       parameters: params,
       templateId: templateId,
@@ -142,11 +152,11 @@ app.post('/api/actions/from-template', (req, res) => {
     
     // Audit log
     writeAudit('Action', action.id, 'user', 'created_from_template', 'success',
-      `Action ${action.id} created from template ${templateId}`);
+      `Action ${action.id} created from template ${templateId} (awxJobTemplateId=${template.awxJobTemplateId})`);
     
     res.status(201).json({
       action: result.action,
-      yaml: yaml,
+      yaml: playbookSource,
       message: 'Action created successfully from template'
     });
     
@@ -391,7 +401,13 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
       return {
         action: step.action,
         provider: stepAction ? stepAction.implementation.provider : 'unknown',
-        awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 0
+        awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 0,
+        // Carries the full parameter set collected on the form (Action
+        // Builder actions use `.parameters`; older manually-defined catalog
+        // actions like DB_RESTART_CYCLE use `.inputs` and have no runtime
+        // params of their own — falls back to {} in that case, execute()
+        // still supplies target_group from the Change).
+        parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
       };
     })
   };
@@ -432,9 +448,15 @@ app.post('/api/plans/:id/execute', async (req, res) => {
   try {
     // Launch AWX job
     const step = plan.steps[0]; // For v1, only 1 step
-    const awxJobId = await launchJob(step.awxJobTemplateId, {
-      target_group: change.target
-    });
+    // Send the FULL parameter set (service_name, reboot_required, etc.) as
+    // extra_vars — not just target_group. `change.target` (from the Change
+    // wizard) takes priority for target_group when both are present, since
+    // it reflects the reviewed/approved target at Change level.
+    const extraVars = {
+      ...step.parameters,
+      target_group: change.target || step.parameters.target_group
+    };
+    const awxJobId = await launchJob(step.awxJobTemplateId, extraVars);
     
     const execution = {
       executionId,
@@ -454,7 +476,7 @@ app.post('/api/plans/:id/execute', async (req, res) => {
     state.changes.set(plan.changeId, change);
     
     writeAudit('Execution', executionId, 'system', 'launched', 'success', 
-      `AWX Job ID: ${awxJobId}`);
+      `AWX Job ID: ${awxJobId}, extra_vars keys: ${Object.keys(extraVars).join(', ')}`);
     
     res.json(execution);
     

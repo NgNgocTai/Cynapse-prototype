@@ -137,7 +137,11 @@ export function addAction(actionInput) {
     implementation: {
       provider: actionInput.implementation.provider,
       awxJobTemplateId: actionInput.implementation.awxJobTemplateId,
-      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300
+      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300,
+      // playbookRef: filename of the Jinja2 playbook this action launches
+      // (informational/audit only — AWX resolves the real playbook itself
+      // via its own Project/Job Template config, not from this field).
+      ...(actionInput.implementation.playbookRef ? { playbookRef: actionInput.implementation.playbookRef } : {})
     },
     verification: actionInput.verification || {
       type: 'embedded',
@@ -147,7 +151,12 @@ export function addAction(actionInput) {
       type: 'escalate',
       action: 'NOTIFY_ONCALL'
     },
-    riskDefault: actionInput.riskDefault
+    riskDefault: actionInput.riskDefault,
+    // Actual submitted form values (service_name, reboot_required, etc).
+    // This is what gets sent as extra_vars at execute time — must be
+    // preserved, previously silently dropped here.
+    ...(actionInput.parameters ? { parameters: actionInput.parameters } : {}),
+    ...(actionInput.templateId ? { templateId: actionInput.templateId } : {})
   };
 
   catalog.actions.push(action);
@@ -173,11 +182,14 @@ export function updateAction(id, actionInput) {
     implementation: {
       provider: actionInput.implementation.provider,
       awxJobTemplateId: actionInput.implementation.awxJobTemplateId,
-      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300
+      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300,
+      playbookRef: actionInput.implementation.playbookRef || catalog.actions[index].implementation.playbookRef
     },
     verification: actionInput.verification || catalog.actions[index].verification,
     compensation: actionInput.compensation || catalog.actions[index].compensation,
-    riskDefault: actionInput.riskDefault
+    riskDefault: actionInput.riskDefault,
+    parameters: actionInput.parameters || catalog.actions[index].parameters,
+    templateId: actionInput.templateId || catalog.actions[index].templateId
   };
 
   catalog.actions[index] = action;

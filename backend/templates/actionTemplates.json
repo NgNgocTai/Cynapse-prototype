@@ -9,6 +9,7 @@
       "description": "Stop service, optionally reboot server, then start service with verification",
       "estimatedDuration": "6-8 minutes",
       "implementation": ["Ansible/systemd"],
+      "awxJobTemplateId": 10,
       "parameters": [
         {
           "name": "action_name",
@@ -28,7 +29,7 @@
           "validation": "^[a-zA-Z0-9@._-]+$"
         },
         {
-          "name": "host_group",
+          "name": "target_group",
           "label": "Target Host Group",
           "type": "string",
           "required": true,
@@ -59,7 +60,7 @@
           "description": "Port number to check if service is responding"
         }
       ],
-      "yamlTemplate": "restart_service.yml.j2"
+      "yamlTemplate": "restart_service.yml"
     },
     {
       "id": "HEALTH_CHECK",
@@ -70,6 +71,7 @@
       "description": "Perform HTTP, TCP, or process health check on target hosts",
       "estimatedDuration": "30 seconds",
       "implementation": ["Ansible/uri", "Ansible/wait_for"],
+      "awxJobTemplateId": 11,
       "parameters": [
         {
           "name": "action_name",
@@ -91,7 +93,7 @@
           "default": "http"
         },
         {
-          "name": "host_group",
+          "name": "target_group",
           "label": "Target Host Group",
           "type": "string",
           "required": true,
@@ -113,7 +115,7 @@
           "required": false
         }
       ],
-      "yamlTemplate": "health_check.yml.j2"
+      "yamlTemplate": "health_check.yml"
     },
     {
       "id": "BACKUP_FILE",
@@ -124,6 +126,7 @@
       "description": "Create timestamped backup of file or directory",
       "estimatedDuration": "1-2 minutes",
       "implementation": ["Ansible/archive", "Ansible/copy"],
+      "awxJobTemplateId": 12,
       "parameters": [
         {
           "name": "action_name",
@@ -133,7 +136,7 @@
           "placeholder": "e.g. Backup ClickHouse Config"
         },
         {
-          "name": "host_group",
+          "name": "target_group",
           "label": "Target Host Group",
           "type": "string",
           "required": true,
@@ -162,7 +165,7 @@
           "default": true
         }
       ],
-      "yamlTemplate": "backup_file.yml.j2"
+      "yamlTemplate": "backup_file.yml"
     },
     {
       "id": "RUN_COMMAND",
@@ -173,6 +176,7 @@
       "description": "Execute arbitrary shell command on target hosts",
       "estimatedDuration": "Variable",
       "implementation": ["Ansible/shell"],
+      "awxJobTemplateId": 13,
       "parameters": [
         {
           "name": "action_name",
@@ -182,7 +186,7 @@
           "placeholder": "e.g. Clear Logs"
         },
         {
-          "name": "host_group",
+          "name": "target_group",
           "label": "Target Host Group",
           "type": "string",
           "required": true,
@@ -210,7 +214,7 @@
           "placeholder": "/tmp"
         }
       ],
-      "yamlTemplate": "run_command.yml.j2"
+      "yamlTemplate": "run_command.yml"
     },
     {
       "id": "SEND_NOTIFICATION",
@@ -221,6 +225,7 @@
       "description": "Send notification via Telegram, Email, or Webhook",
       "estimatedDuration": "10 seconds",
       "implementation": ["Ansible/uri"],
+      "awxJobTemplateId": 14,
       "parameters": [
         {
           "name": "action_name",
@@ -269,7 +274,7 @@
           "default": "info"
         }
       ],
-      "yamlTemplate": "send_notification.yml.j2"
+      "yamlTemplate": "send_notification.yml"
     }
   ]
 }

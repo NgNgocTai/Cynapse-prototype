@@ -1,0 +1,55 @@
+---
+- name: "{{ action_name }}"
+  hosts: "{{ target_group }}"
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Get current timestamp
+      ansible.builtin.set_fact:
+        backup_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+    - name: Ensure backup directory exists
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+
+{% if compress %}
+    - name: Create compressed backup of {{ source_path }}
+      ansible.builtin.archive:
+        path: "{{ source_path }}"
+        dest: "{{ backup_dir }}/backup_{{ backup_timestamp }}.tar.gz"
+        format: gz
+      register: backup_result
+
+    - name: Print backup location
+      ansible.builtin.debug:
+        msg: "Backup created: {{ backup_dir }}/backup_{{ backup_timestamp }}.tar.gz ({{ backup_result.archived | length }} files, {{ backup_result.arcroot }})"
+{% else %}
+    - name: Copy {{ source_path }} to backup location
+      ansible.builtin.copy:
+        src: "{{ source_path }}"
+        dest: "{{ backup_dir }}/backup_{{ backup_timestamp }}"
+        remote_src: true
+      register: backup_result
+
+    - name: Print backup location
+      ansible.builtin.debug:
+        msg: "Backup created: {{ backup_dir }}/backup_{{ backup_timestamp }}"
+{% endif %}
+
+    - name: Verify backup exists
+      ansible.builtin.stat:
+{% if compress %}
+        path: "{{ backup_dir }}/backup_{{ backup_timestamp }}.tar.gz"
+{% else %}
+        path: "{{ backup_dir }}/backup_{{ backup_timestamp }}"
+{% endif %}
+      register: backup_stat
+
+    - name: Confirm backup success
+      ansible.builtin.assert:
+        that:
+          - backup_stat.stat.exists
+        fail_msg: "Backup file not found!"
+        success_msg: "Backup verified successfully"
