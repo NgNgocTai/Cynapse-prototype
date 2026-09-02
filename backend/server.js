@@ -88,14 +88,10 @@ app.post('/api/templates/:id/preview', (req, res) => {
 // POST /api/actions/from-template - Create action from template
 app.post('/api/actions/from-template', (req, res) => {
   try {
-    const { templateId, params } = req.body;
+    const { templateId, params, domain, riskDefault } = req.body;
     
-    if (!templateId) {
-      return res.status(400).json({ error: 'templateId is required' });
-    }
-    
-    if (!params) {
-      return res.status(400).json({ error: 'params is required' });
+    if (!templateId || !params) {
+      return res.status(400).json({ error: 'templateId and params are required' });
     }
     
     // Validate parameters
@@ -124,9 +120,11 @@ app.post('/api/actions/from-template', (req, res) => {
       name: params.action_name,
       category: template.category,
       capability: template.capability,
+      domain: domain || 'CNTT', 
+      riskDefault: riskDefault || 'MEDIUM',
       implementation: {
         provider: 'ansible',
-        awxJobTemplateId: 0, // Will be set when AWX integration is added
+        awxJobTemplateId: 10, // Hardcode tạm ID 10 để chạy mock AWX mượt mà
         playbook: yaml
       },
       parameters: params,

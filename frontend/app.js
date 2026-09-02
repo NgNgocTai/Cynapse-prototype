@@ -1587,7 +1587,32 @@ async function openActionBuilderModal() {
                         <h3 style="margin-bottom: 1rem;">Configure Action</h3>
                         <div id="selectedTemplateInfo" style="padding: 1rem; background: #1f2937; border-radius: 0.5rem; margin-bottom: 1.5rem;"></div>
                         <form id="actionBuilderForm" onsubmit="event.preventDefault(); previewActionYAML();">
+                            <!-- Action Metadata (Domain & Risk) -->
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid #374151;">
+                                <div class="form-group">
+                                    <label class="form-label" style="display: block; margin-bottom: 0.5rem; color: #9ca3af; font-size: 0.875rem;">Domain *</label>
+                                    <select id="actionDomain" class="form-input" style="width: 100%;" required>
+                                        <option value="CNTT">CNTT</option>
+                                        <option value="IP">IP</option>
+                                        <option value="5G">5G</option>
+                                        <option value="Transport">Transport</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" style="display: block; margin-bottom: 0.5rem; color: #9ca3af; font-size: 0.875rem;">Risk Default *</label>
+                                    <select id="actionRisk" class="form-input" style="width: 100%;" required>
+                                        <option value="LOW">LOW</option>
+                                        <option value="MEDIUM" selected>MEDIUM</option>
+                                        <option value="HIGH">HIGH</option>
+                                        <option value="CRITICAL">CRITICAL</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- Dynamic Template Parameters -->
+                            <h4 style="margin-bottom: 1rem; color: #f3f4f6;">Template Parameters</h4>
                             <div id="dynamicParamsContainer"></div>
+                            
                             <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
                                 <button type="button" onclick="previewActionYAML()" class="btn btn-secondary">Preview YAML</button>
                                 <button type="submit" class="btn btn-primary">Create Action</button>
@@ -1772,13 +1797,19 @@ async function createActionFromTemplate() {
     try {
         const params = getFormParameters();
         
+        // Get metadata values
+        const domain = document.getElementById('actionDomain')?.value || 'CNTT';
+        const riskDefault = document.getElementById('actionRisk')?.value || 'MEDIUM';
+        
         // Call create action API
         const response = await fetch(`${state.backendUrl}/api/actions/from-template`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 templateId: selectedTemplateData.id,
-                params: params
+                params: params,
+                domain: domain,
+                riskDefault: riskDefault
             })
         });
         
