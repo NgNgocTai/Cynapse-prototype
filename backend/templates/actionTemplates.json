@@ -1,0 +1,275 @@
+{
+  "templates": [
+    {
+      "id": "RESTART_SERVICE",
+      "name": "Restart Service",
+      "category": "Operational Action",
+      "capability": "SERVICE_RESTART",
+      "icon": "🔄",
+      "description": "Stop service, optionally reboot server, then start service with verification",
+      "estimatedDuration": "6-8 minutes",
+      "implementation": ["Ansible/systemd"],
+      "parameters": [
+        {
+          "name": "action_name",
+          "label": "Action Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "e.g. Restart ClickHouse",
+          "description": "Descriptive name for this action"
+        },
+        {
+          "name": "service_name",
+          "label": "Service Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "clickhouse-server",
+          "description": "Systemd service name",
+          "validation": "^[a-zA-Z0-9@._-]+$"
+        },
+        {
+          "name": "host_group",
+          "label": "Target Host Group",
+          "type": "string",
+          "required": true,
+          "placeholder": "db_servers",
+          "description": "Ansible inventory group name"
+        },
+        {
+          "name": "reboot_required",
+          "label": "Reboot server before starting service",
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to reboot the server after stopping service"
+        },
+        {
+          "name": "reboot_timeout",
+          "label": "Reboot Timeout (seconds)",
+          "type": "number",
+          "default": 300,
+          "required": false,
+          "description": "Maximum time to wait for server to come back online"
+        },
+        {
+          "name": "verify_port",
+          "label": "Port to Verify (optional)",
+          "type": "number",
+          "required": false,
+          "placeholder": "8123",
+          "description": "Port number to check if service is responding"
+        }
+      ],
+      "yamlTemplate": "restart_service.yml.j2"
+    },
+    {
+      "id": "HEALTH_CHECK",
+      "name": "Health Check",
+      "category": "Verification",
+      "capability": "HEALTH_CHECK",
+      "icon": "🏥",
+      "description": "Perform HTTP, TCP, or process health check on target hosts",
+      "estimatedDuration": "30 seconds",
+      "implementation": ["Ansible/uri", "Ansible/wait_for"],
+      "parameters": [
+        {
+          "name": "action_name",
+          "label": "Action Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "e.g. Check ClickHouse Health"
+        },
+        {
+          "name": "check_type",
+          "label": "Check Type",
+          "type": "select",
+          "required": true,
+          "options": [
+            { "value": "http", "label": "HTTP/HTTPS" },
+            { "value": "tcp", "label": "TCP Port" },
+            { "value": "process", "label": "Process Running" }
+          ],
+          "default": "http"
+        },
+        {
+          "name": "host_group",
+          "label": "Target Host Group",
+          "type": "string",
+          "required": true,
+          "placeholder": "db_servers"
+        },
+        {
+          "name": "endpoint",
+          "label": "Endpoint/Port/Process",
+          "type": "string",
+          "required": true,
+          "placeholder": "http://localhost:8123/ping or 8123 or clickhouse-server",
+          "description": "URL for HTTP, port number for TCP, or process name for process check"
+        },
+        {
+          "name": "timeout",
+          "label": "Timeout (seconds)",
+          "type": "number",
+          "default": 60,
+          "required": false
+        }
+      ],
+      "yamlTemplate": "health_check.yml.j2"
+    },
+    {
+      "id": "BACKUP_FILE",
+      "name": "Backup File/Directory",
+      "category": "Operational Action",
+      "capability": "BACKUP",
+      "icon": "💾",
+      "description": "Create timestamped backup of file or directory",
+      "estimatedDuration": "1-2 minutes",
+      "implementation": ["Ansible/archive", "Ansible/copy"],
+      "parameters": [
+        {
+          "name": "action_name",
+          "label": "Action Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "e.g. Backup ClickHouse Config"
+        },
+        {
+          "name": "host_group",
+          "label": "Target Host Group",
+          "type": "string",
+          "required": true,
+          "placeholder": "db_servers"
+        },
+        {
+          "name": "source_path",
+          "label": "Source Path",
+          "type": "string",
+          "required": true,
+          "placeholder": "/etc/clickhouse-server/config.xml",
+          "description": "File or directory to backup"
+        },
+        {
+          "name": "backup_dir",
+          "label": "Backup Directory",
+          "type": "string",
+          "required": true,
+          "default": "/var/backups",
+          "description": "Where to store the backup"
+        },
+        {
+          "name": "compress",
+          "label": "Compress backup (tar.gz)",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "yamlTemplate": "backup_file.yml.j2"
+    },
+    {
+      "id": "RUN_COMMAND",
+      "name": "Run Shell Command",
+      "category": "Operational Action",
+      "capability": "SHELL_EXECUTION",
+      "icon": "⚡",
+      "description": "Execute arbitrary shell command on target hosts",
+      "estimatedDuration": "Variable",
+      "implementation": ["Ansible/shell"],
+      "parameters": [
+        {
+          "name": "action_name",
+          "label": "Action Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "e.g. Clear Logs"
+        },
+        {
+          "name": "host_group",
+          "label": "Target Host Group",
+          "type": "string",
+          "required": true,
+          "placeholder": "db_servers"
+        },
+        {
+          "name": "command",
+          "label": "Shell Command",
+          "type": "textarea",
+          "required": true,
+          "placeholder": "systemctl status clickhouse-server",
+          "description": "Command to execute (be careful!)"
+        },
+        {
+          "name": "become",
+          "label": "Run as root (sudo)",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "working_directory",
+          "label": "Working Directory (optional)",
+          "type": "string",
+          "required": false,
+          "placeholder": "/tmp"
+        }
+      ],
+      "yamlTemplate": "run_command.yml.j2"
+    },
+    {
+      "id": "SEND_NOTIFICATION",
+      "name": "Send Notification",
+      "category": "Compensation",
+      "capability": "NOTIFICATION",
+      "icon": "📢",
+      "description": "Send notification via Telegram, Email, or Webhook",
+      "estimatedDuration": "10 seconds",
+      "implementation": ["Ansible/uri"],
+      "parameters": [
+        {
+          "name": "action_name",
+          "label": "Action Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "e.g. Notify Oncall"
+        },
+        {
+          "name": "notification_type",
+          "label": "Notification Type",
+          "type": "select",
+          "required": true,
+          "options": [
+            { "value": "telegram", "label": "Telegram" },
+            { "value": "email", "label": "Email" },
+            { "value": "webhook", "label": "Webhook" }
+          ],
+          "default": "telegram"
+        },
+        {
+          "name": "message",
+          "label": "Message",
+          "type": "textarea",
+          "required": true,
+          "placeholder": "Execution completed successfully",
+          "description": "Message content to send"
+        },
+        {
+          "name": "recipient",
+          "label": "Recipient",
+          "type": "string",
+          "required": true,
+          "placeholder": "chat_id or email@example.com or https://webhook.site/...",
+          "description": "Telegram chat ID, email address, or webhook URL"
+        },
+        {
+          "name": "severity",
+          "label": "Severity",
+          "type": "select",
+          "options": [
+            { "value": "info", "label": "Info" },
+            { "value": "warning", "label": "Warning" },
+            { "value": "error", "label": "Error" }
+          ],
+          "default": "info"
+        }
+      ],
+      "yamlTemplate": "send_notification.yml.j2"
+    }
+  ]
+}

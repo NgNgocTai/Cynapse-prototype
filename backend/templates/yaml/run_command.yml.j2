@@ -1,0 +1,35 @@
+---
+- name: {{action_name}}
+  hosts: {{host_group}}
+{{#if become}}
+  become: true
+{{/if}}
+  gather_facts: false
+  tasks:
+    - name: Execute command
+      ansible.builtin.shell: {{command}}
+{{#if working_directory}}
+      args:
+        chdir: {{working_directory}}
+{{/if}}
+      register: command_result
+      changed_when: true
+
+    - name: Print command output
+      ansible.builtin.debug:
+        msg:
+          - "Command executed successfully"
+          - "Return code: \{{ command_result.rc }}"
+          - "STDOUT:"
+          - "\{{ command_result.stdout }}"
+{{#if command_result.stderr}}
+          - "STDERR:"
+          - "\{{ command_result.stderr }}"
+{{/if}}
+
+    - name: Verify command succeeded
+      ansible.builtin.assert:
+        that:
+          - command_result.rc == 0
+        fail_msg: "Command failed with return code \{{ command_result.rc }}"
+        success_msg: "Command completed successfully"

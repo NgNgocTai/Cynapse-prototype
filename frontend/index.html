@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYNAPSE - Network Automation Platform</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <h1 class="logo">SYNAPSE</h1>
+            <div class="header-controls">
+                <div class="role-selector">
+                    <label>Role</label>
+                    <select id="roleSelect">
+                        <option value="operator">Network Operator</option>
+                        <option value="bo">BO Automation Engineer</option>
+                        <option value="reviewer">Automation Reviewer</option>
+                        <option value="admin">Platform Admin</option>
+                    </select>
+                </div>
+                <div class="user-info">
+                    <span class="user-badge">O</span>
+                    <span id="currentRole">Network Operator</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Navigation -->
+    <nav class="main-nav">
+        <div class="nav-section">
+            <h3>Automation Studio</h3>
+            <ul>
+                <li><a href="#" data-view="actions">Actions</a></li>
+                <li><a href="#" data-view="blueprints">Blueprints</a></li>
+            </ul>
+        </div>
+        <div class="nav-section">
+            <h3>Operations</h3>
+            <ul>
+                <li><a href="#" data-view="home" class="active">Home</a></li>
+                <li><a href="#" data-view="changes">Changes</a></li>
+                <li><a href="#" data-view="executions">Executions</a></li>
+                <li><a href="#" data-view="audit">Audit</a></li>
+            </ul>
+        </div>
+    </nav>
+
+
+    <!-- Main Content Area -->
+    <main class="main-content" id="mainContent">
+        <!-- Views will be rendered here -->
+    </main>
+
+    <!-- Modal Container -->
+    <div id="modalContainer"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test</title>
+</head>
+<body>
+    <h1>Test Page</h1>
+    <div id="result">Loading...</div>
+    <script>
+        document.getElementById('result').textContent = 'JavaScript is working!';
+        
+        // Test backend
+        fetch('http://localhost:3000/api/changes')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('result').textContent += '\nBackend returned: ' + JSON.stringify(data);
+            })
+            .catch(error => {
+                document.getElementById('result').textContent += '\nError: ' + error.message;
+            });
+    </script>
+</body>
+</html>

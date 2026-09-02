@@ -1,0 +1,60 @@
+---
+- name: {{action_name}}
+  hosts: {{host_group}}
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop {{service_name}} service
+      ansible.builtin.systemd_service:
+        name: {{service_name}}
+        state: stopped
+
+{{#if reboot_required}}
+    - name: Reboot server
+      ansible.builtin.reboot:
+        reboot_timeout: {{reboot_timeout}}
+        connect_timeout: 20
+        pre_reboot_delay: 5
+        post_reboot_delay: 15
+        test_command: uptime
+
+    - name: Check server status after reboot
+      ansible.builtin.command: uptime
+      register: uptime_result
+      changed_when: false
+
+    - name: Show uptime
+      ansible.builtin.debug:
+        msg: "Server back online, uptime: \{{ uptime_result.stdout }}"
+{{/if}}
+
+    - name: Start {{service_name}} service
+      ansible.builtin.systemd_service:
+        name: {{service_name}}
+        state: started
+
+    - name: Check {{service_name}} status
+      ansible.builtin.systemd_service:
+        name: {{service_name}}
+      register: service_status
+
+    - name: Verify {{service_name}} is running
+      ansible.builtin.assert:
+        that:
+          - service_status.status.ActiveState == "active"
+        fail_msg: "{{service_name}} is NOT running after restart."
+        success_msg: "{{service_name}} is running."
+
+{{#if verify_port}}
+    - name: Verify port {{verify_port}} is open
+      ansible.builtin.wait_for:
+        port: {{verify_port}}
+        timeout: 60
+        msg: "Port {{verify_port}} did not respond within timeout"
+{{/if}}
+
+    - name: Print final status
+      ansible.builtin.debug:
+        msg:
+          - "Service {{service_name}}: \{{ service_status.status.ActiveState }}"
+          - "Restart cycle completed successfully"

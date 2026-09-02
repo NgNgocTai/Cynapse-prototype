@@ -1,0 +1,55 @@
+{
+  "actions": [
+    {
+      "id": "DB_RESTART_CYCLE",
+      "name": "Database Restart Cycle",
+      "domain": "CNTT",
+      "capability": "RESTART_WITH_REBOOT",
+      "inputs": [
+        {
+          "name": "target_group",
+          "type": "string",
+          "default": "db_servers",
+          "required": true
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "awxJobTemplateId": 10,
+        "estimatedDurationSec": 420
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Playbook tự assert ClickHouse và PostgreSQL active bằng ansible.builtin.assert; job success/fail đã phản ánh đúng kết quả verify, không cần bước verify tách riêng ở bản v1."
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL",
+        "note": "Reboot server không có thao tác rollback thật sự — compensation ở đây là báo động, không phải hoàn tác."
+      },
+      "riskDefault": "HIGH"
+    }
+  ],
+  "blueprints": [
+    {
+      "kind": "AutomationBlueprint",
+      "metadata": {
+        "name": "db-restart-cycle",
+        "version": "1.0"
+      },
+      "spec": {
+        "owner": "CNTT-BO",
+        "domain": "CNTT",
+        "steps": [
+          {
+            "action": "DB_RESTART_CYCLE"
+          }
+        ],
+        "compensation": {
+          "onFailure": "NOTIFY_ONCALL"
+        },
+        "status": "PUBLISHED"
+      }
+    }
+  ]
+}
