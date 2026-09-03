@@ -1,39 +1,62 @@
 import { getCatalog } from './catalogStore.js';
 
 export function calculateRisk(change) {
+  if (!change || !change.objective) {
+    return { riskScore: 50, reason: 'No objective specified, default medium risk' };
+  }
+
   const catalog = getCatalog();
-  
-  // Tìm blueprint liên quan (giả sử objective map tới blueprint name)
-  const blueprint = catalog.blueprints.find(b => 
-    change.objective.includes(b.metadata.name.toUpperCase().replace(/-/g, '_'))
-  );
-  
-  if (!blueprint) {
-    return { riskScore: 50, reason: 'Unknown objective, default medium risk' };
-  }
-  
-  // Lấy action đầu tiên trong blueprint
-  const actionId = blueprint.spec.steps[0].action;
-  const action = catalog.actions.find(a => a.id === actionId);
-  
-  if (!action) {
-    return { riskScore: 50, reason: 'Unknown action' };
-  }
-  
-  // Map riskDefault text sang số
+  const objStr = String(change.objective);
+  const normalizedObj = objStr.toUpperCase().replace(/[-\s]/g, '_');
+
   const riskMap = {
     'LOW': 25,
     'MEDIUM': 50,
     'HIGH': 75,
     'CRITICAL': 95
   };
-  
-  const riskScore = riskMap[action.riskDefault] || 50;
-  
-  return { 
-    riskScore, 
-    reason: `Action ${action.id} has default risk: ${action.riskDefault}` 
-  };
+
+  // 1. Check if objective matches a Blueprint
+  const blueprint = catalog.blueprints.find(b => {
+    const bpNameNorm = b.metadata.name.toUpperCase().replace(/[-\s]/g, '_');
+    return objStr === b.metadata.name || normalizedObj === bpNameNorm || normalizedObj.includes(bpNameNorm);
+  });
+
+  if (blueprint && blueprint.spec && blueprint.spec.steps && blueprint.spec.steps.length > 0) {
+    let maxRiskScore = 25;
+    let highestRiskAction = '';
+
+    for (const step of blueprint.spec.steps) {
+      const act = catalog.actions.find(a => a.id === step.action);
+      const score = act ? (riskMap[act.riskDefault] || 50) : 50;
+      if (score > maxRiskScore) {
+        maxRiskScore = score;
+        highestRiskAction = act ? `${act.id} (${act.riskDefault})` : step.action;
+      }
+    }
+
+    return {
+      riskScore: maxRiskScore,
+      reason: `Blueprint ${blueprint.metadata.name} has ${blueprint.spec.steps.length} steps. Peak risk from ${highestRiskAction || 'steps'}`
+    };
+  }
+
+  // 2. Check if objective matches a single Action primitive
+  const action = catalog.actions.find(a => 
+    objStr === a.id || 
+    normalizedObj === a.id.toUpperCase().replace(/[-\s]/g, '_') ||
+    a.id.includes(normalizedObj)
+  );
+
+  if (action) {
+    const riskScore = riskMap[action.riskDefault] || 50;
+    return {
+      riskScore,
+      reason: `Action primitive ${action.id} default risk: ${action.riskDefault}`
+    };
+  }
+
+  return { riskScore: 50, reason: 'Unknown objective, default medium risk' };
 }
 
 export function evaluatePolicy(change, riskScore) {

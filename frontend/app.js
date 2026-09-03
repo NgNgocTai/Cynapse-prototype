@@ -14,6 +14,8 @@ const state = {
     executionLog: [],
     auditLog: [],
     activeChangeId: null,
+    composerSteps: [],
+    currentExecution: null,
     backendUrl: 'http://localhost:4000'
 };
 
@@ -308,8 +310,11 @@ function renderBlueprintsView() {
 
     return `
         <div class="view-header">
-            <h2 class="card-title">Blueprints</h2>
-            <button class="btn btn-primary" onclick="openNewBlueprintModal()">+ New Blueprint</button>
+            <h2 class="card-title">Blueprints (Workflows)</h2>
+            <button class="btn btn-primary" onclick="openNewBlueprintModal()" style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
+                <span style="font-size: 1.1rem; margin-right: 0.4rem;">🧩</span>
+                Blueprint Composer
+            </button>
         </div>
         
         <div class="metrics-grid" style="margin-top: 2rem;">
@@ -453,7 +458,7 @@ function renderExecutionsView() {
         
         <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
             <div>
-                <div class="card">
+                <div class="card" style="margin-bottom: 1.5rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                         <h3 class="card-title">Change Details</h3>
                         <span class="badge badge-${getStateColor(change.state)}">${change.state}</span>
@@ -467,11 +472,14 @@ function renderExecutionsView() {
                         ${isBlocked ? `<div style="color: #fca5a5; grid-column: 1/-1;"><strong>⚠ Blocked:</strong> High risk — requires maintenance window</div>` : ''}
                     </div>
                 </div>
+
+                <!-- Orchestration Pipeline Steps -->
+                ${renderPipelineStepsTracker(change)}
                 
                 <div class="card">
-                    <h3 class="card-title" style="margin-bottom: 1rem;">Runtime Log</h3>
-                    <div class="code-block" id="executionLog" style="min-height: 300px; max-height: 500px; overflow-y: auto; color: #6ee7b7;">
-${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready to execute. Approve the change and click "Run Execution" to start...'}
+                    <h3 class="card-title" style="margin-bottom: 1rem;">Runtime Execution Log</h3>
+                    <div class="code-block" id="executionLog" style="min-height: 250px; max-height: 450px; overflow-y: auto; color: #6ee7b7; font-family: monospace;">
+${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready to execute. Approve the change and click "Run Execution" to start orchestration...'}
                     </div>
                 </div>
             </div>
@@ -480,9 +488,39 @@ ${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready 
                 <div class="card">
                     <h3 class="card-title" style="margin-bottom: 1rem;">Automation Details</h3>
                     ${(() => {
+                        const blueprint = state.blueprints.find(b => b.metadata.name === change.objective);
+                        if (blueprint) {
+                            return `
+                                <div style="margin-bottom: 0.75rem;">
+                                    <div style="color: #9ca3af; font-size: 0.875rem;">Type</div>
+                                    <div style="margin-top: 0.25rem;"><span class="badge badge-info">Composition (Blueprint)</span></div>
+                                </div>
+                                <div style="margin-bottom: 0.75rem;">
+                                    <div style="color: #9ca3af; font-size: 0.875rem;">Blueprint Name</div>
+                                    <div style="margin-top: 0.25rem; font-family: monospace; font-size: 0.875rem; color: #60a5fa;">${blueprint.metadata.name}</div>
+                                </div>
+                                <div style="margin-bottom: 0.75rem;">
+                                    <div style="color: #9ca3af; font-size: 0.875rem;">Workflow Pipeline</div>
+                                    <div style="margin-top: 0.25rem; font-weight: 700; color: #34d399;">${blueprint.spec.steps.length} Steps Sequence</div>
+                                </div>
+                                <div style="margin-bottom: 0.75rem;">
+                                    <div style="color: #9ca3af; font-size: 0.875rem;">Domain</div>
+                                    <div style="margin-top: 0.25rem;">${blueprint.spec.domain}</div>
+                                </div>
+                                <div>
+                                    <div style="color: #9ca3af; font-size: 0.875rem;">On Failure Policy</div>
+                                    <div style="margin-top: 0.25rem;"><span class="badge badge-warning">${blueprint.spec.compensation?.onFailure || 'NOTIFY_ONCALL'}</span></div>
+                                </div>
+                            `;
+                        }
+
                         const action = state.actions.find(a => a.id === change.objective);
-                        if (!action) return `<div style="color: #9ca3af;">Action not found for objective: ${change.objective}</div>`;
+                        if (!action) return `<div style="color: #9ca3af;">Objective: ${change.objective}</div>`;
                         return `
+                            <div style="margin-bottom: 0.75rem;">
+                                <div style="color: #9ca3af; font-size: 0.875rem;">Type</div>
+                                <div style="margin-top: 0.25rem;"><span class="badge badge-success">Primitive (Action)</span></div>
+                            </div>
                             <div style="margin-bottom: 0.75rem;">
                                 <div style="color: #9ca3af; font-size: 0.875rem;">Action</div>
                                 <div style="margin-top: 0.25rem; font-family: monospace; font-size: 0.875rem; color: #60a5fa;">${action.id}</div>
@@ -494,10 +532,6 @@ ${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready 
                             <div style="margin-bottom: 0.75rem;">
                                 <div style="color: #9ca3af; font-size: 0.875rem;">AWX Job Template</div>
                                 <div style="margin-top: 0.25rem;">#${action.implementation.awxJobTemplateId}</div>
-                            </div>
-                            <div style="margin-bottom: 0.75rem;">
-                                <div style="color: #9ca3af; font-size: 0.875rem;">Estimated Duration</div>
-                                <div style="margin-top: 0.25rem;">${Math.round(action.implementation.estimatedDurationSec / 60)} minutes</div>
                             </div>
                             <div>
                                 <div style="color: #9ca3af; font-size: 0.875rem;">Risk Default</div>
@@ -512,8 +546,128 @@ ${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready 
 }
 
 // ============================================================
-// STEPPER — Change lifecycle visualization
+// PIPELINE STEPS TRACKER — Live Step Execution Tracker
 // ============================================================
+function renderPipelineStepsTracker(change) {
+    const execution = state.currentExecution || state.executions.find(e => e.changeId === change.id);
+    const blueprint = state.blueprints.find(b => b.metadata.name === change.objective);
+    
+    let steps = [];
+    if (execution && execution.steps && execution.steps.length > 0) {
+        steps = execution.steps;
+    } else if (blueprint && blueprint.spec && blueprint.spec.steps) {
+        steps = blueprint.spec.steps.map((s, idx) => ({
+            stepIndex: idx,
+            stepName: `Step ${idx + 1}: ${s.action}`,
+            actionId: s.action,
+            status: 'PENDING',
+            awxJobId: null
+        }));
+    } else {
+        const action = state.actions.find(a => a.id === change.objective);
+        steps = [{
+            stepIndex: 0,
+            stepName: action ? action.name : change.objective,
+            actionId: change.objective,
+            status: execution ? (execution.status === 'completed' ? 'SUCCESS' : execution.status === 'failed' ? 'FAILED' : 'RUNNING') : 'PENDING',
+            awxJobId: execution?.awxJobId || null
+        }];
+    }
+
+    return `
+        <div class="card steps-pipeline-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 class="card-title" style="margin: 0; display: flex; align-items: center; gap: 0.5rem; font-size: 1.05rem;">
+                    <span>⚡</span> Orchestration Pipeline Steps
+                </h3>
+                <span class="badge badge-info" style="font-size: 0.75rem;">${steps.length} step(s)</span>
+            </div>
+            <div id="pipelineStepsList">
+                ${steps.map((st, idx) => {
+                    const action = state.actions.find(a => a.id === st.actionId);
+                    const actName = action ? action.name : st.actionId;
+                    const statusClass = st.status || 'PENDING';
+                    const statusIcon = statusClass === 'SUCCESS' ? '✓' : statusClass === 'RUNNING' ? '⟳' : statusClass === 'FAILED' ? '✕' : '○';
+                    const badgeClass = statusClass === 'SUCCESS' ? 'success' : statusClass === 'RUNNING' ? 'info pulse-glow' : statusClass === 'FAILED' ? 'danger' : 'secondary';
+                    
+                    return `
+                        <div class="step-tracker-item status-${statusClass}" id="step-item-${idx}">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span class="composer-step-number" style="background: ${statusClass === 'SUCCESS' ? '#10b981' : statusClass === 'RUNNING' ? '#3b82f6' : statusClass === 'FAILED' ? '#ef4444' : '#4b5563'};">
+                                    ${statusIcon}
+                                </span>
+                                <div>
+                                    <div style="font-weight: 600; color: #f9fafb; font-size: 0.88rem;">
+                                        Step ${idx + 1}: ${actName}
+                                    </div>
+                                    <div style="font-size: 0.72rem; color: #9ca3af; font-family: monospace;">
+                                        ${st.actionId}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                ${st.awxJobId ? `
+                                    <span class="awx-badge" title="AWX Execution Job ID">
+                                        🚀 AWX #${st.awxJobId}
+                                    </span>
+                                ` : ''}
+                                <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
+                                    ${st.status}
+                                </span>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function updatePipelineStepsDOM(execution) {
+    if (!execution || !execution.steps) return;
+    const container = document.getElementById('pipelineStepsList');
+    if (!container) return;
+
+    container.innerHTML = execution.steps.map((st, idx) => {
+        const action = state.actions.find(a => a.id === st.actionId);
+        const actName = action ? action.name : st.actionId;
+        const statusClass = st.status || 'PENDING';
+        const statusIcon = statusClass === 'SUCCESS' ? '✓' : statusClass === 'RUNNING' ? '⟳' : statusClass === 'FAILED' ? '✕' : '○';
+        const badgeClass = statusClass === 'SUCCESS' ? 'success' : statusClass === 'RUNNING' ? 'info pulse-glow' : statusClass === 'FAILED' ? 'danger' : 'secondary';
+        
+        return `
+            <div class="step-tracker-item status-${statusClass}" id="step-item-${idx}">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="composer-step-number" style="background: ${statusClass === 'SUCCESS' ? '#10b981' : statusClass === 'RUNNING' ? '#3b82f6' : statusClass === 'FAILED' ? '#ef4444' : '#4b5563'};">
+                        ${statusIcon}
+                    </span>
+                    <div>
+                        <div style="font-weight: 600; color: #f9fafb; font-size: 0.88rem;">
+                            Step ${idx + 1}: ${actName}
+                        </div>
+                        <div style="font-size: 0.72rem; color: #9ca3af; font-family: monospace;">
+                            ${st.actionId}
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    ${st.awxJobId ? `
+                        <span class="awx-badge" title="AWX Execution Job ID">
+                            🚀 AWX #${st.awxJobId}
+                        </span>
+                    ` : ''}
+                    <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
+                        ${st.status}
+                    </span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ===========================
+// STEPPER — Change lifecycle visualization
+// ===========================
 function renderStepper(currentState) {
     const steps = [
         { key: 'Draft', label: 'Created', icon: '📝' },
@@ -897,7 +1051,7 @@ function getActionFormData() {
 }
 
 // ============================================================
-// MODAL — New/Edit Blueprint
+// MODAL — Blueprint Composer (Visual Workflow Builder)
 // ============================================================
 function openNewBlueprintModal() {
     if (state.actions.length === 0) {
@@ -905,29 +1059,36 @@ function openNewBlueprintModal() {
         return;
     }
 
+    state.composerSteps = [];
+
     const modal = `
         <div class="modal-overlay" onclick="closeModal(event)">
-            <div class="modal" onclick="event.stopPropagation()" style="max-width: 550px;">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 980px; width: 95%;">
                 <div class="modal-header">
-                    <h2 class="modal-title">New Blueprint</h2>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.5rem;">🧩</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">Blueprint Composer</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Assemble atomic Action primitives into a multi-step orchestration workflow</div>
+                        </div>
+                    </div>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <!-- Metadata Row -->
+                    <div style="display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #374151;">
                         <div>
                             <label class="form-label">Blueprint Name *</label>
-                            <input type="text" id="bpName" class="form-input" placeholder="e.g., service-health-check">
-                            <div style="font-size: 0.7rem; color: #6b7280; margin-top: 0.25rem;">kebab-case</div>
+                            <input type="text" id="bpName" class="form-input" placeholder="e.g., db-maintenance-cycle" style="font-family: monospace;">
+                            <div style="font-size: 0.7rem; color: #9ca3af; margin-top: 0.25rem;">kebab-case (lowercase, hyphens)</div>
                         </div>
                         <div>
                             <label class="form-label">Version *</label>
-                            <input type="text" id="bpVersion" class="form-input" value="1.0">
+                            <input type="text" id="bpVersion" class="form-input" value="1.0.0">
                         </div>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
                         <div>
                             <label class="form-label">Owner *</label>
-                            <input type="text" id="bpOwner" class="form-input" placeholder="e.g., CNTT-BO">
+                            <input type="text" id="bpOwner" class="form-input" placeholder="e.g., DevOps-Admin" value="DevOps-Admin">
                         </div>
                         <div>
                             <label class="form-label">Domain *</label>
@@ -939,42 +1100,75 @@ function openNewBlueprintModal() {
                             </select>
                         </div>
                     </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
-                        <h4 style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 1rem;">Steps (select Actions)</h4>
-                        <div id="bpStepsContainer" style="max-height: 200px; overflow-y: auto;">
-                            ${state.actions.map(a => `
-                                <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; background: #1f2937; border-radius: 0.375rem; margin-bottom: 0.5rem; cursor: pointer;">
-                                    <input type="checkbox" class="bp-step-checkbox" value="${a.id}" style="width: auto;">
-                                    <div>
-                                        <div style="font-weight: 600;">${a.id}</div>
-                                        <div style="font-size: 0.75rem; color: #9ca3af;">${a.name} · ${a.domain} · Risk: ${a.riskDefault}</div>
+
+                    <!-- 2-Column Composer Layout -->
+                    <div class="composer-container">
+                        <!-- Left: Available Primitives -->
+                        <div class="composer-col">
+                            <div class="composer-col-header">
+                                <span style="font-weight: 600; font-size: 0.9rem; color: #f3f4f6;">1. Select Action Primitives</span>
+                                <span class="badge badge-info" style="font-size: 0.7rem;">${state.actions.length} available</span>
+                            </div>
+                            <input type="text" id="actionSearchInput" class="form-input" placeholder="🔍 Search actions..." style="margin-bottom: 0.75rem; font-size: 0.85rem;" oninput="filterComposerActions(this.value)">
+                            <div id="composerActionsList" class="composer-list">
+                                ${state.actions.map(a => `
+                                    <div class="composer-action-card">
+                                        <div style="flex: 1; padding-right: 0.5rem;">
+                                            <div style="font-weight: 600; color: #f3f4f6; font-size: 0.85rem;">${a.name}</div>
+                                            <div style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">${a.id}</div>
+                                            <div style="display: flex; gap: 0.4rem; margin-top: 0.25rem;">
+                                                <span class="badge badge-info" style="font-size: 0.65rem;">${a.domain}</span>
+                                                <span class="badge badge-${a.riskDefault === 'HIGH' || a.riskDefault === 'CRITICAL' ? 'danger' : 'warning'}" style="font-size: 0.65rem;">${a.riskDefault}</span>
+                                            </div>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" style="padding: 0.35rem 0.65rem; font-size: 0.75rem; white-space: nowrap;" onclick="addComposerStep('${a.id}')">
+                                            + Add Step
+                                        </button>
                                     </div>
-                                </label>
-                            `).join('')}
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <!-- Right: Execution Sequence Pipeline -->
+                        <div class="composer-col">
+                            <div class="composer-col-header">
+                                <span style="font-weight: 600; font-size: 0.9rem; color: #f3f4f6;">2. Orchestration Pipeline Sequence</span>
+                                <span class="badge badge-success" style="font-size: 0.75rem;"><span id="composerStepCount">0</span> steps</span>
+                            </div>
+                            <div id="composerStepsContainer" class="composer-list">
+                                <div style="text-align: center; color: #9ca3af; padding: 3rem 1rem; border: 2px dashed #374151; border-radius: 0.5rem;">
+                                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">🧩</div>
+                                    <div style="font-weight: 600; color: #d1d5db;">Workflow is empty</div>
+                                    <div style="font-size: 0.8rem; margin-top: 0.25rem;">Click <strong>+ Add Step</strong> on any Action to the left</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
+
+                    <!-- Policies Row -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #374151;">
                         <div>
-                            <label class="form-label">On Failure</label>
+                            <label class="form-label">Compensation on Failure</label>
                             <select id="bpCompensation" class="form-input">
-                                <option value="NOTIFY_ONCALL">NOTIFY_ONCALL</option>
+                                <option value="NOTIFY_ONCALL">NOTIFY_ONCALL (Escalate to On-call)</option>
+                                <option value="ROLLBACK">ROLLBACK (Execute compensating actions)</option>
                             </select>
                         </div>
                         <div>
-                            <label class="form-label">Status</label>
+                            <label class="form-label">Lifecycle Status</label>
                             <select id="bpStatus" class="form-input">
-                                <option value="DRAFT">DRAFT</option>
-                                <option value="IN_REVIEW">IN_REVIEW</option>
-                                <option value="PUBLISHED" selected>PUBLISHED</option>
+                                <option value="PUBLISHED" selected>PUBLISHED (Ready for execution)</option>
+                                <option value="DRAFT">DRAFT (Draft mode)</option>
+                                <option value="IN_REVIEW">IN_REVIEW (Pending review)</option>
                             </select>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button class="btn btn-primary" onclick="createBlueprint()">Create Blueprint</button>
+                    <button class="btn btn-primary" onclick="createBlueprint()" style="background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%);">
+                        ✓ Save & Publish Blueprint
+                    </button>
                 </div>
             </div>
         </div>
@@ -986,27 +1180,32 @@ function openEditBlueprintModal(bpName) {
     const bp = state.blueprints.find(b => b.metadata.name === bpName);
     if (!bp) return;
 
-    const stepActionIds = bp.spec.steps.map(s => s.action);
+    state.composerSteps = bp.spec.steps.map(s => s.action);
 
     const modal = `
         <div class="modal-overlay" onclick="closeModal(event)">
-            <div class="modal" onclick="event.stopPropagation()" style="max-width: 550px;">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 980px; width: 95%;">
                 <div class="modal-header">
-                    <h2 class="modal-title">Edit Blueprint: ${bpName}</h2>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.5rem;">⚙️</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">Edit Blueprint: ${bpName}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Update orchestration sequence or metadata</div>
+                        </div>
+                    </div>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <!-- Metadata Row -->
+                    <div style="display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #374151;">
                         <div>
                             <label class="form-label">Blueprint Name</label>
-                            <input type="text" id="bpName" class="form-input" value="${bpName}" disabled style="opacity: 0.5;">
+                            <input type="text" id="bpName" class="form-input" value="${bpName}" disabled style="opacity: 0.6; font-family: monospace;">
                         </div>
                         <div>
                             <label class="form-label">Version *</label>
                             <input type="text" id="bpVersion" class="form-input" value="${bp.metadata.version}">
                         </div>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
                         <div>
                             <label class="form-label">Owner *</label>
                             <input type="text" id="bpOwner" class="form-input" value="${bp.spec.owner}">
@@ -1018,27 +1217,49 @@ function openEditBlueprintModal(bpName) {
                             </select>
                         </div>
                     </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
-                        <h4 style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 1rem;">Steps (select Actions)</h4>
-                        <div id="bpStepsContainer" style="max-height: 200px; overflow-y: auto;">
-                            ${state.actions.map(a => `
-                                <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; background: #1f2937; border-radius: 0.375rem; margin-bottom: 0.5rem; cursor: pointer;">
-                                    <input type="checkbox" class="bp-step-checkbox" value="${a.id}" ${stepActionIds.includes(a.id) ? 'checked' : ''} style="width: auto;">
-                                    <div>
-                                        <div style="font-weight: 600;">${a.id}</div>
-                                        <div style="font-size: 0.75rem; color: #9ca3af;">${a.name} · ${a.domain} · Risk: ${a.riskDefault}</div>
+
+                    <!-- 2-Column Composer Layout -->
+                    <div class="composer-container">
+                        <div class="composer-col">
+                            <div class="composer-col-header">
+                                <span style="font-weight: 600; font-size: 0.9rem; color: #f3f4f6;">Available Action Primitives</span>
+                                <span class="badge badge-info" style="font-size: 0.7rem;">${state.actions.length}</span>
+                            </div>
+                            <input type="text" id="actionSearchInput" class="form-input" placeholder="🔍 Search actions..." style="margin-bottom: 0.75rem; font-size: 0.85rem;" oninput="filterComposerActions(this.value)">
+                            <div id="composerActionsList" class="composer-list">
+                                ${state.actions.map(a => `
+                                    <div class="composer-action-card">
+                                        <div style="flex: 1; padding-right: 0.5rem;">
+                                            <div style="font-weight: 600; color: #f3f4f6; font-size: 0.85rem;">${a.name}</div>
+                                            <div style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">${a.id}</div>
+                                            <div style="display: flex; gap: 0.4rem; margin-top: 0.25rem;">
+                                                <span class="badge badge-info" style="font-size: 0.65rem;">${a.domain}</span>
+                                                <span class="badge badge-${a.riskDefault === 'HIGH' || a.riskDefault === 'CRITICAL' ? 'danger' : 'warning'}" style="font-size: 0.65rem;">${a.riskDefault}</span>
+                                            </div>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" style="padding: 0.35rem 0.65rem; font-size: 0.75rem; white-space: nowrap;" onclick="addComposerStep('${a.id}')">
+                                            + Add Step
+                                        </button>
                                     </div>
-                                </label>
-                            `).join('')}
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <div class="composer-col">
+                            <div class="composer-col-header">
+                                <span style="font-weight: 600; font-size: 0.9rem; color: #f3f4f6;">Orchestration Pipeline Sequence</span>
+                                <span class="badge badge-success" style="font-size: 0.75rem;"><span id="composerStepCount">${state.composerSteps.length}</span> steps</span>
+                            </div>
+                            <div id="composerStepsContainer" class="composer-list"></div>
                         </div>
                     </div>
-                    
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #374151;">
                         <div>
                             <label class="form-label">On Failure</label>
                             <select id="bpCompensation" class="form-input">
                                 <option value="NOTIFY_ONCALL">NOTIFY_ONCALL</option>
+                                <option value="ROLLBACK">ROLLBACK</option>
                             </select>
                         </div>
                         <div>
@@ -1059,6 +1280,94 @@ function openEditBlueprintModal(bpName) {
         </div>
     `;
     document.getElementById('modalContainer').innerHTML = modal;
+    renderComposerStepsList();
+}
+
+// Composer helper functions
+function addComposerStep(actionId) {
+    state.composerSteps.push(actionId);
+    renderComposerStepsList();
+}
+
+function removeComposerStep(index) {
+    state.composerSteps.splice(index, 1);
+    renderComposerStepsList();
+}
+
+function moveComposerStep(index, delta) {
+    const newIndex = index + delta;
+    if (newIndex < 0 || newIndex >= state.composerSteps.length) return;
+    const temp = state.composerSteps[index];
+    state.composerSteps[index] = state.composerSteps[newIndex];
+    state.composerSteps[newIndex] = temp;
+    renderComposerStepsList();
+}
+
+function renderComposerStepsList() {
+    const container = document.getElementById('composerStepsContainer');
+    const countEl = document.getElementById('composerStepCount');
+    if (countEl) countEl.innerText = state.composerSteps.length;
+    if (!container) return;
+
+    if (state.composerSteps.length === 0) {
+        container.innerHTML = `
+            <div style="text-align: center; color: #9ca3af; padding: 3rem 1rem; border: 2px dashed #374151; border-radius: 0.5rem;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">🧩</div>
+                <div style="font-weight: 600; color: #d1d5db;">Workflow is empty</div>
+                <div style="font-size: 0.8rem; margin-top: 0.25rem;">Click <strong>+ Add Step</strong> on any Action to the left</div>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = state.composerSteps.map((actionId, idx) => {
+        const action = state.actions.find(a => a.id === actionId);
+        const name = action ? action.name : actionId;
+        const domain = action ? action.domain : 'CNTT';
+        const awxId = action?.implementation?.awxJobTemplateId ? `#${action.implementation.awxJobTemplateId}` : '';
+        return `
+            <div class="composer-step-item">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="composer-step-number">${idx + 1}</span>
+                    <div>
+                        <div style="font-weight: 600; color: #f9fafb; font-size: 0.875rem;">${name}</div>
+                        <div style="font-size: 0.75rem; color: #9ca3af; font-family: monospace;">${actionId} · ${domain} ${awxId ? `· AWX ${awxId}` : ''}</div>
+                    </div>
+                </div>
+                <div class="composer-controls">
+                    <button type="button" class="composer-btn-ctrl" title="Move Up" onclick="moveComposerStep(${idx}, -1)" ${idx === 0 ? 'disabled style="opacity:0.3;"' : ''}>▲</button>
+                    <button type="button" class="composer-btn-ctrl" title="Move Down" onclick="moveComposerStep(${idx}, 1)" ${idx === state.composerSteps.length - 1 ? 'disabled style="opacity:0.3;"' : ''}>▼</button>
+                    <button type="button" class="composer-btn-ctrl danger" title="Remove Step" onclick="removeComposerStep(${idx})">✕</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function filterComposerActions(searchTerm = '') {
+    const container = document.getElementById('composerActionsList');
+    if (!container) return;
+    const term = searchTerm.toLowerCase().trim();
+    const filtered = state.actions.filter(a => 
+        a.name.toLowerCase().includes(term) || 
+        a.id.toLowerCase().includes(term) || 
+        (a.capability && a.capability.toLowerCase().includes(term))
+    );
+    container.innerHTML = filtered.map(a => `
+        <div class="composer-action-card">
+            <div style="flex: 1; padding-right: 0.5rem;">
+                <div style="font-weight: 600; color: #f3f4f6; font-size: 0.85rem;">${a.name}</div>
+                <div style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">${a.id}</div>
+                <div style="display: flex; gap: 0.4rem; margin-top: 0.25rem;">
+                    <span class="badge badge-info" style="font-size: 0.65rem;">${a.domain}</span>
+                    <span class="badge badge-${a.riskDefault === 'HIGH' || a.riskDefault === 'CRITICAL' ? 'danger' : 'warning'}" style="font-size: 0.65rem;">${a.riskDefault}</span>
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary" style="padding: 0.35rem 0.65rem; font-size: 0.75rem; white-space: nowrap;" onclick="addComposerStep('${a.id}')">
+                + Add Step
+            </button>
+        </div>
+    `).join('');
 }
 
 async function createBlueprint() {
@@ -1104,9 +1413,9 @@ async function saveBlueprint(bpName) {
             return;
         }
 
-        const bp = await res.json();
-        const idx = state.blueprints.findIndex(b => b.metadata.name === bpName);
-        if (idx >= 0) state.blueprints[idx] = bp;
+        const updated = await res.json();
+        const index = state.blueprints.findIndex(b => b.metadata.name === bpName);
+        if (index !== -1) state.blueprints[index] = updated;
         closeModal();
         renderView('blueprints');
     } catch (error) {
@@ -1144,15 +1453,15 @@ function getBlueprintFormData() {
     const compensation = document.getElementById('bpCompensation').value;
     const status = document.getElementById('bpStatus').value;
     
-    const steps = Array.from(document.querySelectorAll('.bp-step-checkbox:checked')).map(cb => cb.value);
+    const steps = state.composerSteps;
 
     if (!name || !version || !owner) {
         alert('Please fill in all required fields (marked with *)');
         return null;
     }
 
-    if (steps.length === 0) {
-        alert('Please select at least one Action for the blueprint steps.');
+    if (!steps || steps.length === 0) {
+        alert('Please add at least one step to the Blueprint sequence pipeline!');
         return null;
     }
 
@@ -1181,10 +1490,18 @@ function openNewChangeModal() {
                 </div>
                 <div class="modal-body">
                     <div style="margin-bottom: 1rem;">
-                        <label class="form-label">Objective (Action) *</label>
+                        <label class="form-label">Objective (Automation Unit) *</label>
                         <select id="objectiveInput" class="form-input">
-                            ${state.actions.map(a => `<option value="${a.id}">${a.name} (${a.id})</option>`).join('')}
+                            ${state.blueprints.length > 0 ? `
+                                <optgroup label="📋 Blueprints (Multi-step Workflows)">
+                                    ${state.blueprints.map(b => `<option value="${b.metadata.name}">[Blueprint] ${b.metadata.name} (${b.spec.steps.length} steps)</option>`).join('')}
+                                </optgroup>
+                            ` : ''}
+                            <optgroup label="⚡ Action Primitives (Single Step)">
+                                ${state.actions.map(a => `<option value="${a.id}">[Action] ${a.name} (${a.id})</option>`).join('')}
+                            </optgroup>
                         </select>
+                        <div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem;">Select either a composed Blueprint workflow or an atomic Action primitive</div>
                     </div>
                     <div style="margin-bottom: 1rem;">
                         <label class="form-label">Target Hosts *</label>
@@ -1419,7 +1736,7 @@ function viewChangeDetail(changeId) {
 // ============================================================
 
 async function runExecution(changeId) {
-    state.executionLog = ['[INFO] Requesting plan resolve...'];
+    state.executionLog = ['[INFO] Resolving execution plan...'];
     updateExecutionLog();
 
     try {
@@ -1437,10 +1754,10 @@ async function runExecution(changeId) {
         
         const plan = await planRes.json();
         state.executionLog.push(`[INFO] Plan resolved: ${plan.planId}`);
-        state.executionLog.push(`[INFO] Blueprint: ${plan.blueprint}`);
+        state.executionLog.push(`[INFO] Blueprint: ${plan.blueprint} (${plan.steps.length} step(s))`);
         updateExecutionLog();
 
-        // Step 2: Execute Plan (launch AWX job)
+        // Step 2: Execute Plan (launches orchestration loop)
         const execRes = await fetch(`${state.backendUrl}/api/plans/${plan.planId}/execute`, { 
             method: 'POST' 
         });
@@ -1453,22 +1770,33 @@ async function runExecution(changeId) {
         }
         
         const execution = await execRes.json();
-        state.executionLog.push(`[INFO] AWX job launched: ${execution.awxJobId}`);
-        state.executionLog.push(`[INFO] Execution ID: ${execution.executionId}`);
-        state.executionLog.push(`[INFO] Polling status every 7 seconds...`);
+        state.currentExecution = execution;
+        updatePipelineStepsDOM(execution);
+
+        state.executionLog.push(`[INFO] Orchestration pipeline started: ${execution.executionId}`);
+        state.executionLog.push(`[INFO] Tracking real-time steps progress...`);
         state.executionLog.push('');
         updateExecutionLog();
 
-        // Step 3: Poll status
-        const maxPolls = 100;
+        // Update change in local state to Executing
+        const change = state.changes.find(c => c.id === changeId);
+        if (change) {
+            change.state = 'Executing';
+            change.executionId = execution.executionId;
+        }
+
+        // Step 3: Poll status frequently (every 1.5s for responsive updates)
+        const maxPolls = 200;
         let pollCount = 0;
+        let lastReportedStep = -1;
+        const loggedSteps = new Set();
         
         const pollInterval = setInterval(async () => {
             pollCount++;
             
             if (pollCount > maxPolls) {
                 clearInterval(pollInterval);
-                state.executionLog.push('[WARNING] Execution taking longer than expected (12 minutes)');
+                state.executionLog.push('[WARNING] Execution taking longer than expected');
                 updateExecutionLog();
                 return;
             }
@@ -1476,55 +1804,61 @@ async function runExecution(changeId) {
             try {
                 const statusRes = await fetch(`${state.backendUrl}/api/executions/${execution.executionId}/status`);
                 
-                if (!statusRes.ok) {
-                    state.executionLog.push(`[ERROR] Failed to fetch status`);
-                    updateExecutionLog();
-                    return;
-                }
+                if (!statusRes.ok) return;
                 
                 const status = await statusRes.json();
+                state.currentExecution = status;
+                updatePipelineStepsDOM(status);
 
-                if (status.status === 'successful' || status.status === 'failed' || status.status === 'error') {
+                // Check active step changes
+                if (status.currentStepIndex !== lastReportedStep && status.steps && status.steps[status.currentStepIndex]) {
+                    const currentStep = status.steps[status.currentStepIndex];
+                    if (currentStep.status === 'RUNNING') {
+                        state.executionLog.push(`[ORCHESTRATOR] ⟳ Step ${status.currentStepIndex + 1}/${status.steps.length}: Running ${currentStep.actionId}${currentStep.awxJobId ? ` (AWX Job #${currentStep.awxJobId})` : ''}...`);
+                        lastReportedStep = status.currentStepIndex;
+                        updateExecutionLog();
+                    }
+                }
+
+                // Check for step completion in log
+                if (status.steps) {
+                    status.steps.forEach((s, idx) => {
+                        if (s.status === 'SUCCESS' && !loggedSteps.has(idx)) {
+                            loggedSteps.add(idx);
+                            state.executionLog.push(`[ORCHESTRATOR] ✓ Step ${idx + 1}/${status.steps.length}: ${s.actionId} Completed successfully.`);
+                            updateExecutionLog();
+                        }
+                    });
+                }
+
+                if (status.finished) {
                     clearInterval(pollInterval);
                     
                     // Update local change state
-                    const change = state.changes.find(c => c.id === changeId);
                     if (change) {
-                        change.state = status.status === 'successful' ? 'Verified' : 'Failed';
+                        change.state = (status.status === 'completed' || status.status === 'successful') ? 'Verified' : 'Failed';
                     }
                     
-                    // Fetch full log
-                    const logRes = await fetch(`${state.backendUrl}/api/executions/${execution.executionId}/log`);
-                    const log = await logRes.text();
-                    
                     state.executionLog.push('');
-                    state.executionLog.push('========== AWX JOB LOG ==========');
-                    state.executionLog.push(log);
-                    state.executionLog.push('=================================');
-                    state.executionLog.push('');
-                    
-                    if (status.status === 'successful') {
-                        state.executionLog.push('[SUCCESS] ========================================');
-                        state.executionLog.push('[SUCCESS] Execution completed successfully!');
-                        state.executionLog.push('[SUCCESS] All services verified and running');
-                        state.executionLog.push('[SUCCESS] ========================================');
+                    if (status.status === 'completed' || status.status === 'successful') {
+                        state.executionLog.push('================================================');
+                        state.executionLog.push('✓ [SUCCESS] ALL ORCHESTRATION STEPS COMPLETED!');
+                        state.executionLog.push(`✓ [SUCCESS] Workflow ${plan.blueprint} verified.`);
+                        state.executionLog.push('================================================');
                     } else {
-                        state.executionLog.push('[FAILED] ========================================');
-                        state.executionLog.push('[FAILED] Execution failed — check log above');
-                        state.executionLog.push('[FAILED] Compensation NOTIFY_ONCALL triggered');
-                        state.executionLog.push('[FAILED] ========================================');
+                        state.executionLog.push('================================================');
+                        state.executionLog.push('✕ [FAILED] Workflow aborted due to step failure.');
+                        state.executionLog.push('✕ [FAILED] Compensation NOTIFY_ONCALL triggered.');
+                        state.executionLog.push('================================================');
                     }
                     
                     updateExecutionLog();
-                } else {
-                    // Still running
-                    state.executionLog.push(`[INFO] [${new Date().toLocaleTimeString()}] Job status: ${status.status}... (poll ${pollCount}/${maxPolls})`);
-                    updateExecutionLog();
+                    renderView('executions');
                 }
             } catch (error) {
                 console.error('Poll error:', error);
             }
-        }, 7000);
+        }, 1500);
         
     } catch (error) {
         console.error('Execution error:', error);

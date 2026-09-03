@@ -28,6 +28,43 @@
         "note": "Reboot server không có thao tác rollback thật sự — compensation ở đây là báo động, không phải hoàn tác."
       },
       "riskDefault": "HIGH"
+    },
+    {
+      "id": "DATABASE_HEALTH_CHECK",
+      "name": "Database Health Check",
+      "domain": "CNTT",
+      "capability": "HEALTH_CHECK",
+      "inputs": [
+        {
+          "name": "target_group",
+          "type": "string",
+          "default": "servers",
+          "required": true
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "awxJobTemplateId": 11,
+        "estimatedDurationSec": 300,
+        "playbookRef": "health_check.yml"
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Playbook self-verifies"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      },
+      "riskDefault": "LOW",
+      "parameters": {
+        "action_name": "Database Health Check",
+        "target_group": "db_servers",
+        "endpoint": "http://localhost:8123/ping",
+        "check_type": "http",
+        "timeout": 60
+      },
+      "templateId": "HEALTH_CHECK"
     }
   ],
   "blueprints": [
@@ -43,6 +80,32 @@
         "steps": [
           {
             "action": "DB_RESTART_CYCLE"
+          }
+        ],
+        "compensation": {
+          "onFailure": "NOTIFY_ONCALL"
+        },
+        "status": "PUBLISHED"
+      }
+    },
+    {
+      "kind": "AutomationBlueprint",
+      "metadata": {
+        "name": "db-maintenance-workflow",
+        "version": "1.0.0"
+      },
+      "spec": {
+        "owner": "DBA-Team",
+        "domain": "CNTT",
+        "steps": [
+          {
+            "action": "DATABASE_HEALTH_CHECK"
+          },
+          {
+            "action": "DB_RESTART_CYCLE"
+          },
+          {
+            "action": "DATABASE_HEALTH_CHECK"
           }
         ],
         "compensation": {

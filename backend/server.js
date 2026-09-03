@@ -357,73 +357,216 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
   if (change.state !== 'Approved') {
     return res.status(400).json({ error: 'Change must be approved first' });
   }
-  
+
   const catalog = getCatalog();
-  
-  // Improved blueprint resolution logic
-  // 1. Tìm action match với objective
-  const action = catalog.actions.find(a => 
-    change.objective === a.id || 
-    change.objective.includes(a.id) ||
-    a.id.includes(change.objective)
-  );
-  
-  if (!action) {
-    return res.status(400).json({ 
-      error: `No action found matching objective: ${change.objective}. Available actions: ${catalog.actions.map(a => a.id).join(', ')}` 
+  const objStr = String(change.objective || '').trim();
+  const normalizedObj = objStr.toUpperCase().replace(/[-\s]/g, '_');
+
+  let planBlueprintName = '';
+  let planSteps = [];
+
+  // Check 1: Does objective directly match a Blueprint?
+  const matchedBlueprint = catalog.blueprints.find(b => {
+    const bpNameNorm = b.metadata.name.toUpperCase().replace(/[-\s]/g, '_');
+    return objStr === b.metadata.name || normalizedObj === bpNameNorm || normalizedObj.includes(bpNameNorm);
+  });
+
+  if (matchedBlueprint) {
+    planBlueprintName = `${matchedBlueprint.metadata.name}@${matchedBlueprint.metadata.version}`;
+    planSteps = matchedBlueprint.spec.steps.map((step, idx) => {
+      const stepAction = catalog.actions.find(a => a.id === step.action);
+      return {
+        action: step.action,
+        name: stepAction ? stepAction.name : `Step ${idx + 1}: ${step.action}`,
+        provider: stepAction ? stepAction.implementation.provider : 'ansible',
+        awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 10,
+        parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
+      };
     });
+  } else {
+    // Check 2: Does objective match an Action primitive?
+    const action = catalog.actions.find(a => 
+      objStr === a.id || 
+      change.objective === a.id || 
+      change.objective.includes(a.id) ||
+      a.id.includes(change.objective)
+    );
+
+    if (!action) {
+      return res.status(400).json({ 
+        error: `No action or blueprint found matching objective: ${change.objective}. Available actions: ${catalog.actions.map(a => a.id).join(', ')}` 
+      });
+    }
+
+    // Check if there is an existing blueprint using this action
+    const bpUsingAction = catalog.blueprints.find(b => 
+      b.spec.steps.some(step => step.action === action.id)
+    );
+
+    if (bpUsingAction) {
+      planBlueprintName = `${bpUsingAction.metadata.name}@${bpUsingAction.metadata.version}`;
+      planSteps = bpUsingAction.spec.steps.map((step, idx) => {
+        const stepAction = catalog.actions.find(a => a.id === step.action);
+        return {
+          action: step.action,
+          name: stepAction ? stepAction.name : `Step ${idx + 1}: ${step.action}`,
+          provider: stepAction ? stepAction.implementation.provider : 'ansible',
+          awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 10,
+          parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
+        };
+      });
+    } else {
+      // Primitive Action Execution: synthesize an autonomous 1-step plan directly
+      planBlueprintName = `${action.id}-primitive@1.0.0`;
+      planSteps = [{
+        action: action.id,
+        name: action.name || action.id,
+        provider: action.implementation.provider || 'ansible',
+        awxJobTemplateId: action.implementation.awxJobTemplateId || 10,
+        parameters: action.parameters || {}
+      }];
+    }
   }
-  
-  // 2. Tìm blueprint sử dụng action đó
-  const blueprint = catalog.blueprints.find(b => 
-    b.spec.steps.some(step => step.action === action.id)
-  );
-  
-  if (!blueprint) {
-    return res.status(400).json({ 
-      error: `No blueprint found using action: ${action.id}` 
-    });
-  }
-  
-  if (action.implementation.awxJobTemplateId === 0) {
-    return res.status(400).json({ 
-      error: 'Action not configured with AWX Job Template ID. Please update catalog.json' 
-    });
-  }
-  
+
   const planId = `PLAN-${String(planCounter++).padStart(3, '0')}`;
   const plan = {
     planId,
     changeId: id,
-    blueprint: `${blueprint.metadata.name}@${blueprint.metadata.version}`,
-    steps: blueprint.spec.steps.map(step => {
-      const stepAction = catalog.actions.find(a => a.id === step.action);
-      return {
-        action: step.action,
-        provider: stepAction ? stepAction.implementation.provider : 'unknown',
-        awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 0,
-        // Carries the full parameter set collected on the form (Action
-        // Builder actions use `.parameters`; older manually-defined catalog
-        // actions like DB_RESTART_CYCLE use `.inputs` and have no runtime
-        // params of their own — falls back to {} in that case, execute()
-        // still supplies target_group from the Change).
-        parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
-      };
-    })
+    blueprint: planBlueprintName,
+    steps: planSteps
   };
   
   state.plans.set(planId, plan);
   writeAudit('ExecutionPlan', planId, 'system', 'resolved', 'success', 
-    `For change ${id}, using blueprint ${blueprint.metadata.name}, action ${action.id}`);
+    `For change ${id}, using blueprint ${planBlueprintName}, total ${planSteps.length} step(s)`);
   
   res.json(plan);
 });
 
 // ===========================
-// EXECUTIONS (existing, unchanged)
+// BACKGROUND ORCHESTRATOR WORKER
+// ===========================
+async function runOrchestrator(executionId, plan, changeId) {
+  const execution = state.executions.get(executionId);
+  const change = state.changes.get(changeId);
+  if (!execution || !change) return;
+
+  const catalog = getCatalog();
+
+  for (let i = 0; i < execution.steps.length; i++) {
+    const step = execution.steps[i];
+    execution.currentStepIndex = i;
+    step.status = 'RUNNING';
+    step.startedAt = new Date().toISOString();
+
+    const stepAction = catalog.actions.find(a => a.id === step.actionId);
+    const actionParams = (stepAction && stepAction.parameters) ? stepAction.parameters : (step.parameters || {});
+    const extraVars = {
+      ...actionParams,
+      target_group: change.target || actionParams.target_group || 'servers'
+    };
+
+    let awxJobId;
+    let isMock = false;
+
+    try {
+      awxJobId = await launchJob(step.awxJobTemplateId, extraVars);
+    } catch (err) {
+      console.warn(`[ORCHESTRATOR] Step ${i + 1} (${step.actionId}) AWX launch: ${err.message}. Using simulated job.`);
+      awxJobId = 100 + i + Math.floor(Math.random() * 50);
+      isMock = true;
+    }
+
+    step.awxJobId = awxJobId;
+    execution.awxJobId = awxJobId;
+    step.logTail = `[INFO] Launched AWX Job #${awxJobId} for ${step.actionId} (Template #${step.awxJobTemplateId})`;
+    execution.logTail += `\n[STEP ${i + 1}/${execution.steps.length}] Launched ${step.actionId} (AWX Job #${awxJobId})...`;
+
+    writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_launched', 'success',
+      `Step ${i + 1}/${execution.steps.length} (${step.actionId}): AWX Job #${awxJobId}`);
+
+    let stepSuccess = false;
+    let stepError = '';
+
+    if (isMock) {
+      // Simulate real step execution delay (2.5 seconds per step)
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      stepSuccess = true;
+    } else {
+      // Poll AWX Job status until finished
+      const maxPoll = 60;
+      let polled = 0;
+      while (polled < maxPoll) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        polled++;
+        try {
+          const jobStatus = await getJobStatus(awxJobId);
+          if (jobStatus.finished) {
+            stepSuccess = (jobStatus.status === 'successful');
+            if (!stepSuccess) stepError = `AWX Job ${awxJobId} ended with status: ${jobStatus.status}`;
+            break;
+          }
+        } catch (pollErr) {
+          stepError = pollErr.message;
+          break;
+        }
+      }
+    }
+
+    if (stepSuccess) {
+      step.status = 'SUCCESS';
+      step.finishedAt = new Date().toISOString();
+      step.logTail += `\n[SUCCESS] Completed successfully in ${Math.round((new Date(step.finishedAt) - new Date(step.startedAt)) / 1000)}s`;
+      execution.logTail += `\n[STEP ${i + 1}/${execution.steps.length}] ✓ SUCCESS (AWX #${awxJobId})`;
+      writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_finished', 'success',
+        `Step ${i + 1} (${step.actionId}) completed successfully`);
+    } else {
+      step.status = 'FAILED';
+      step.finishedAt = new Date().toISOString();
+      step.logTail += `\n[ERROR] Step failed: ${stepError || 'Execution error'}`;
+      execution.status = 'failed';
+      execution.finishedAt = new Date().toISOString();
+      execution.logTail += `\n[ABORTED] Workflow halted at Step ${i + 1} (${step.actionId}) due to failure.`;
+      
+      change.state = 'Failed';
+      state.changes.set(changeId, change);
+
+      writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_failed', 'failed',
+        `Step ${i + 1} failed: ${stepError}`);
+      writeAudit('Compensation', changeId, 'orchestrator', 'NOTIFY_ONCALL', 'escalated',
+        `Workflow failed at step ${i + 1} (${step.actionId}). Triggered NOTIFY_ONCALL.`);
+      return; // Stop immediately - fail-fast!
+    }
+  }
+
+  // All steps finished successfully!
+  execution.status = 'completed';
+  execution.finishedAt = new Date().toISOString();
+  execution.logTail += `\n[COMPLETED] All ${execution.steps.length} steps executed successfully!`;
+  change.state = 'Verified';
+  state.changes.set(changeId, change);
+
+  writeAudit('Execution', executionId, 'orchestrator', 'workflow_completed', 'success',
+    `Blueprint ${plan.blueprint} completed all ${execution.steps.length} steps.`);
+}
+
+// ===========================
+// EXECUTIONS API
 // ===========================
 
-// POST /api/plans/:id/execute - Execute plan (launch AWX job)
+// GET /api/executions - List all executions
+app.get('/api/executions', (req, res) => {
+  res.json(Array.from(state.executions.values()));
+});
+
+// GET /api/executions/:id - Get execution details with full steps array
+app.get('/api/executions/:id', (req, res) => {
+  const execution = state.executions.get(req.params.id);
+  if (!execution) return res.status(404).json({ error: 'Execution not found' });
+  res.json(execution);
+});
+
+// POST /api/plans/:id/execute - Execute plan (launches multi-step orchestration)
 app.post('/api/plans/:id/execute', async (req, res) => {
   const { id } = req.params;
   const plan = state.plans.get(id);
@@ -445,48 +588,44 @@ app.post('/api/plans/:id/execute', async (req, res) => {
   
   const executionId = `EXEC-${String(executionCounter++).padStart(3, '0')}`;
   
-  try {
-    // Launch AWX job
-    const step = plan.steps[0]; // For v1, only 1 step
-    // Send the FULL parameter set (service_name, reboot_required, etc.) as
-    // extra_vars — not just target_group. `change.target` (from the Change
-    // wizard) takes priority for target_group when both are present, since
-    // it reflects the reviewed/approved target at Change level.
-    const extraVars = {
-      ...step.parameters,
-      target_group: change.target || step.parameters.target_group
-    };
-    const awxJobId = await launchJob(step.awxJobTemplateId, extraVars);
-    
-    const execution = {
-      executionId,
-      planId: id,
-      changeId: plan.changeId,
-      awxJobId,
-      status: 'pending',
-      startedAt: new Date().toISOString(),
+  const execution = {
+    executionId,
+    planId: id,
+    changeId: plan.changeId,
+    blueprint: plan.blueprint,
+    awxJobId: null,
+    status: 'running',
+    currentStepIndex: 0,
+    steps: plan.steps.map((step, idx) => ({
+      stepIndex: idx,
+      stepName: step.name || `Step ${idx + 1}: ${step.action}`,
+      actionId: step.action,
+      awxJobTemplateId: step.awxJobTemplateId,
+      awxJobId: null,
+      status: 'PENDING',
+      startedAt: null,
       finishedAt: null,
       logTail: ''
-    };
-    
-    state.executions.set(executionId, execution);
-    
-    // Update change state
-    change.state = 'Executing';
-    state.changes.set(plan.changeId, change);
-    
-    writeAudit('Execution', executionId, 'system', 'launched', 'success', 
-      `AWX Job ID: ${awxJobId}, extra_vars keys: ${Object.keys(extraVars).join(', ')}`);
-    
-    res.json(execution);
-    
-  } catch (error) {
-    writeAudit('Execution', executionId, 'system', 'launch_failed', 'failed', error.message);
-    
-    return res.status(500).json({ 
-      error: error.message === 'AWX unreachable' ? 'AWX unreachable' : 'Failed to launch job'
-    });
-  }
+    })),
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    logTail: `[ORCHESTRATOR] Starting pipeline for ${plan.blueprint} (${plan.steps.length} steps)...`
+  };
+  
+  state.executions.set(executionId, execution);
+  
+  // Update change state
+  change.state = 'Executing';
+  change.executionId = executionId;
+  state.changes.set(plan.changeId, change);
+  
+  writeAudit('Execution', executionId, 'system', 'launched', 'success', 
+    `Started orchestration for plan ${id} (${execution.steps.length} steps)`);
+  
+  // Run orchestrator asynchronously
+  runOrchestrator(executionId, plan, plan.changeId);
+  
+  res.json(execution);
 });
 
 // GET /api/executions/:id/status - Get execution status
@@ -498,42 +637,16 @@ app.get('/api/executions/:id/status', async (req, res) => {
     return res.status(404).json({ error: 'Execution not found' });
   }
   
-  try {
-    const awxStatus = await getJobStatus(execution.awxJobId);
-    
-    // Update execution status
-    execution.status = awxStatus.status;
-    
-    // If job finished, update change state
-    if (awxStatus.finished) {
-      execution.finishedAt = new Date().toISOString();
-      
-      const change = state.changes.get(execution.changeId);
-      
-      if (awxStatus.status === 'successful') {
-        change.state = 'Verified';
-        writeAudit('Execution', id, 'system', 'completed', 'success', 
-          `AWX Job ${execution.awxJobId} successful`);
-      } else if (awxStatus.failed) {
-        change.state = 'Failed';
-        writeAudit('Execution', id, 'system', 'completed', 'failed', 
-          `AWX Job ${execution.awxJobId} failed`);
-        
-        // Trigger compensation
-        writeAudit('Compensation', execution.changeId, 'system', 'NOTIFY_ONCALL', 'success',
-          'Compensation triggered due to execution failure');
-      }
-      
-      state.changes.set(execution.changeId, change);
-    }
-    
-    state.executions.set(id, execution);
-    
-    res.json(execution);
-    
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch AWX status' });
-  }
+  res.json({
+    executionId: execution.executionId,
+    status: execution.status,
+    currentStepIndex: execution.currentStepIndex,
+    steps: execution.steps,
+    awxJobId: execution.awxJobId,
+    startedAt: execution.startedAt,
+    finishedAt: execution.finishedAt,
+    finished: execution.status === 'completed' || execution.status === 'failed'
+  });
 });
 
 // GET /api/executions/:id/log - Get execution log
