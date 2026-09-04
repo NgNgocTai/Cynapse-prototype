@@ -50,6 +50,12 @@ async function loadInitialData() {
         if (blueprintsRes.ok) {
             state.blueprints = await blueprintsRes.json();
         }
+
+        // Load executions
+        const executionsRes = await fetch(`${state.backendUrl}/api/executions`);
+        if (executionsRes.ok) {
+            state.executions = await executionsRes.json();
+        }
     } catch (error) {
         console.error('Failed to load initial data:', error);
         // Continue with empty state if backend not available
@@ -441,12 +447,25 @@ function renderExecutionsView() {
     const isBlocked = change.state === 'Blocked';
     const needsApproval = change.state === 'Assessed' && (change.policyResult === 'APPROVAL' || change.policyResult === 'AUTO_APPROVE');
     
+    const execution = state.currentExecution || state.executions.find(e => e.changeId === change.id);
+    if (execution && (!state.executionLog || state.executionLog.length === 0) && execution.logTail) {
+        state.executionLog = execution.logTail.split('\n');
+    }
+
     return `
         <div class="view-header">
             <h2 class="card-title">Execution — ${change.id}</h2>
-            <div style="display: flex; gap: 1rem;">
+            <div style="display: flex; gap: 0.75rem; align-items: center;">
                 ${needsApproval ? `<button class="btn btn-primary" onclick="approveChange('${change.id}')">✓ Approve</button>` : ''}
                 ${canExecute ? `<button class="btn btn-success" onclick="runExecution('${change.id}')">▶ Run Execution</button>` : ''}
+                ${(change.state === 'Verified' || change.state === 'Failed') ? `
+                    <span class="badge badge-${change.state === 'Verified' ? 'success' : 'danger'}" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+                        ${change.state === 'Verified' ? '✓ Completed & Verified' : '✕ Execution Failed'}
+                    </span>
+                    <button class="btn btn-secondary" onclick="runExecution('${change.id}')" style="border: 1px solid #4b5563;" title="Re-run this orchestration workflow">
+                        ↻ Re-run Pipeline
+                    </button>
+                ` : ''}
                 ${isBlocked ? `<button class="btn btn-danger" disabled>✗ Blocked</button>` : ''}
                 ${change.state === 'Executing' ? `<span class="badge badge-info pulse" style="padding: 0.5rem 1rem;">⟳ Running...</span>` : ''}
                 <button class="btn btn-secondary" onclick="renderView('changes')">← Back to Changes</button>
@@ -1618,9 +1637,29 @@ async function approveChange(changeId) {
     }
 }
 
-function executeChange(changeId) {
+async function executeChange(changeId) {
     state.activeChangeId = changeId;
-    state.executionLog = [];
+    const change = state.changes.find(c => c.id === changeId);
+    
+    let exec = state.executions.find(e => e.changeId === changeId);
+    if (!exec && change && change.executionId) {
+        try {
+            const res = await fetch(`${state.backendUrl}/api/executions/${change.executionId}`);
+            if (res.ok) {
+                exec = await res.json();
+                state.executions.push(exec);
+            }
+        } catch (e) {
+            console.error('Error fetching execution:', e);
+        }
+    }
+    
+    state.currentExecution = exec || null;
+    if (exec && exec.logTail) {
+        state.executionLog = exec.logTail.split('\n');
+    } else {
+        state.executionLog = [];
+    }
     renderView('executions');
 }
 

@@ -113,6 +113,29 @@
         },
         "status": "PUBLISHED"
       }
+    },
+    {
+      "kind": "AutomationBlueprint",
+      "metadata": {
+        "name": "restart-service",
+        "version": "1.0.0"
+      },
+      "spec": {
+        "owner": "DevOps-Admin",
+        "domain": "CNTT",
+        "steps": [
+          {
+            "action": "DATABASE_HEALTH_CHECK"
+          },
+          {
+            "action": "DB_RESTART_CYCLE"
+          }
+        ],
+        "compensation": {
+          "onFailure": "NOTIFY_ONCALL"
+        },
+        "status": "PUBLISHED"
+      }
     }
   ]
 }
