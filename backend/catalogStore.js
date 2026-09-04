@@ -51,17 +51,19 @@ function validateAction(action, catalog, isUpdate = false) {
     errors.push('capability is required');
   }
 
-  if (!action.implementation || !action.implementation.provider) {
-    errors.push('implementation.provider is required');
-  } else if (!VALID_PROVIDERS.includes(action.implementation.provider)) {
+  const provider = (action.implementation && action.implementation.provider) || action.provider || 'ansible';
+  if (!VALID_PROVIDERS.includes(provider)) {
     errors.push(`provider must be one of: ${VALID_PROVIDERS.join(', ')}`);
   }
 
-  if (!action.implementation || !action.implementation.awxJobTemplateId || action.implementation.awxJobTemplateId <= 0) {
-    errors.push('implementation.awxJobTemplateId must be > 0');
+  if (action.implementation && action.implementation.awxJobTemplateId !== undefined && action.implementation.awxJobTemplateId !== null) {
+    if (typeof action.implementation.awxJobTemplateId !== 'number' || action.implementation.awxJobTemplateId <= 0) {
+      errors.push('implementation.awxJobTemplateId must be a positive number if provided');
+    }
   }
 
-  if (!VALID_RISK_LEVELS.includes(action.riskDefault)) {
+  const risk = action.riskDefault || 'LOW';
+  if (!VALID_RISK_LEVELS.includes(risk)) {
     errors.push(`riskDefault must be one of: ${VALID_RISK_LEVELS.join(', ')}`);
   }
 
@@ -93,9 +95,10 @@ function validateBlueprint(bp, catalog, isUpdate = false) {
   }
 
   if (!bp.steps || !Array.isArray(bp.steps) || bp.steps.length === 0) {
-    errors.push('steps must be a non-empty array of action IDs');
+    errors.push('steps must be a non-empty array of actions');
   } else {
-    for (const actionId of bp.steps) {
+    for (const stepItem of bp.steps) {
+      const actionId = typeof stepItem === 'string' ? stepItem : stepItem.action;
       const actionExists = catalog.actions.find(a => a.id === actionId);
       if (!actionExists) {
         errors.push(`Action "${actionId}" not found in catalog`);
@@ -124,24 +127,21 @@ export function getAction(id) {
 export function addAction(actionInput) {
   const catalog = getCatalog();
   const errors = validateAction(actionInput, catalog);
-  if (errors.length > 0) return { ok: false, errors };
-
+  const impl = actionInput.implementation || {};
   const action = {
     id: actionInput.id,
     name: actionInput.name,
     domain: actionInput.domain,
     capability: actionInput.capability,
-    inputs: actionInput.inputs || [
-      { name: 'target_group', type: 'string', default: 'servers', required: true }
-    ],
+    description: actionInput.description || '',
+    inputs: actionInput.inputs || [],
+    outputs: actionInput.outputs || [],
+    task_template: actionInput.task_template || null,
     implementation: {
-      provider: actionInput.implementation.provider,
-      awxJobTemplateId: actionInput.implementation.awxJobTemplateId,
-      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300,
-      // playbookRef: filename of the Jinja2 playbook this action launches
-      // (informational/audit only — AWX resolves the real playbook itself
-      // via its own Project/Job Template config, not from this field).
-      ...(actionInput.implementation.playbookRef ? { playbookRef: actionInput.implementation.playbookRef } : {})
+      provider: impl.provider || 'ansible',
+      awxJobTemplateId: impl.awxJobTemplateId,
+      estimatedDurationSec: impl.estimatedDurationSec || 60,
+      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {})
     },
     verification: actionInput.verification || {
       type: 'embedded',
@@ -151,10 +151,7 @@ export function addAction(actionInput) {
       type: 'escalate',
       action: 'NOTIFY_ONCALL'
     },
-    riskDefault: actionInput.riskDefault,
-    // Actual submitted form values (service_name, reboot_required, etc).
-    // This is what gets sent as extra_vars at execute time — must be
-    // preserved, previously silently dropped here.
+    riskDefault: actionInput.riskDefault || 'LOW',
     ...(actionInput.parameters ? { parameters: actionInput.parameters } : {}),
     ...(actionInput.templateId ? { templateId: actionInput.templateId } : {})
   };
@@ -173,23 +170,29 @@ export function updateAction(id, actionInput) {
   const errors = validateAction({ ...actionInput, id }, catalog, true);
   if (errors.length > 0) return { ok: false, errors };
 
+  const current = catalog.actions[index];
+  const impl = actionInput.implementation || current.implementation || {};
+
   const action = {
-    ...catalog.actions[index],
-    name: actionInput.name,
-    domain: actionInput.domain,
-    capability: actionInput.capability,
-    inputs: actionInput.inputs || catalog.actions[index].inputs,
+    ...current,
+    name: actionInput.name || current.name,
+    domain: actionInput.domain || current.domain,
+    capability: actionInput.capability || current.capability,
+    description: actionInput.description !== undefined ? actionInput.description : current.description,
+    inputs: actionInput.inputs || current.inputs || [],
+    outputs: actionInput.outputs || current.outputs || [],
+    task_template: actionInput.task_template !== undefined ? actionInput.task_template : current.task_template,
     implementation: {
-      provider: actionInput.implementation.provider,
-      awxJobTemplateId: actionInput.implementation.awxJobTemplateId,
-      estimatedDurationSec: actionInput.implementation.estimatedDurationSec || 300,
-      playbookRef: actionInput.implementation.playbookRef || catalog.actions[index].implementation.playbookRef
+      provider: impl.provider || 'ansible',
+      awxJobTemplateId: impl.awxJobTemplateId,
+      estimatedDurationSec: impl.estimatedDurationSec || 60,
+      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {})
     },
-    verification: actionInput.verification || catalog.actions[index].verification,
-    compensation: actionInput.compensation || catalog.actions[index].compensation,
-    riskDefault: actionInput.riskDefault,
-    parameters: actionInput.parameters || catalog.actions[index].parameters,
-    templateId: actionInput.templateId || catalog.actions[index].templateId
+    verification: actionInput.verification || current.verification,
+    compensation: actionInput.compensation || current.compensation,
+    riskDefault: actionInput.riskDefault || current.riskDefault,
+    parameters: actionInput.parameters || current.parameters,
+    templateId: actionInput.templateId || current.templateId
   };
 
   catalog.actions[index] = action;
@@ -245,7 +248,17 @@ export function addBlueprint(bpInput) {
     spec: {
       owner: bpInput.owner,
       domain: bpInput.domain,
-      steps: bpInput.steps.map(actionId => ({ action: actionId })),
+      description: bpInput.description || '',
+      steps: bpInput.steps.map((item, idx) => {
+        if (typeof item === 'string') {
+          return { stepIndex: idx + 1, action: item, inputs: {} };
+        }
+        return {
+          stepIndex: idx + 1,
+          action: item.action,
+          inputs: item.inputs || {}
+        };
+      }),
       compensation: {
         onFailure: bpInput.compensationOnFailure || 'NOTIFY_ONCALL'
       },
@@ -275,7 +288,17 @@ export function updateBlueprint(name, bpInput) {
     spec: {
       owner: bpInput.owner,
       domain: bpInput.domain,
-      steps: bpInput.steps.map(actionId => ({ action: actionId })),
+      description: bpInput.description || catalog.blueprints[index].spec.description || '',
+      steps: bpInput.steps.map((item, idx) => {
+        if (typeof item === 'string') {
+          return { stepIndex: idx + 1, action: item, inputs: {} };
+        }
+        return {
+          stepIndex: idx + 1,
+          action: item.action,
+          inputs: item.inputs || {}
+        };
+      }),
       compensation: {
         onFailure: bpInput.compensationOnFailure || 'NOTIFY_ONCALL'
       },

@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { launchJob, getJobStatus, getJobLog, getJobEvents } from './awxClient.js';
+import { runAnsiblePlaybook } from './ansibleRunner.js';
 import { calculateRisk, evaluatePolicy } from './policy.js';
 import { writeAudit, readAudit } from './audit.js';
 import {
@@ -17,7 +17,8 @@ import {
   getAvailableTemplates,
   getTemplate,
   validateParameters,
-  previewYAML
+  previewYAML,
+  generateBlueprintPlaybook
 } from './yamlGenerator.js';
 
 dotenv.config();
@@ -31,7 +32,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
 // CORS config chỉ allow localhost:5500 (frontend port)
 app.use(cors({
@@ -50,6 +51,48 @@ const state = {
 let changeCounter = 1;
 let planCounter = 1;
 let executionCounter = 1;
+
+// ===========================
+// ANSIBLE MODULE SCHEMAS API (Task Definition Builder)
+// ===========================
+// Cách 1: Built-in schema thư viện JSON (13 core modules chuẩn hóa cho đồ án)
+app.get('/api/module-schemas', (req, res) => {
+  try {
+    const schemasPath = path.join(__dirname, 'moduleSchemas.json');
+    const content = fs.readFileSync(schemasPath, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cách 2: Extensible dynamic schema via `ansible-doc -j <module>` khi host có cài Ansible
+app.get('/api/module-schemas/inspect/:module', (req, res) => {
+  const { module } = req.params;
+  import('child_process').then(({ exec }) => {
+    exec(`ansible-doc -j ${module}`, (error, stdout, stderr) => {
+      if (error) {
+        return res.json({
+          mode: 'dynamic_ansible_doc',
+          available: false,
+          error: 'ansible-doc is not installed or not in PATH on this host. Falling back to built-in moduleSchemas.json.',
+          module
+        });
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        res.json({
+          mode: 'dynamic_ansible_doc',
+          available: true,
+          data: parsed
+        });
+      } catch (parseErr) {
+        res.status(500).json({ error: 'Failed to parse ansible-doc JSON output' });
+      }
+    });
+  });
+});
+
 
 // ===========================
 // TEMPLATES API
@@ -259,8 +302,29 @@ app.delete('/api/blueprints/:name', (req, res) => {
   res.json({ message: `Blueprint ${req.params.name} deleted` });
 });
 
+// GET /api/blueprints/:name/yaml - Generate and preview complete Ansible Playbook YAML
+app.get('/api/blueprints/:name/yaml', (req, res) => {
+  try {
+    const { name } = req.params;
+    const { target_hosts } = req.query;
+    const blueprint = getBlueprint(name);
+    if (!blueprint) {
+      return res.status(404).json({ error: `Blueprint "${name}" not found` });
+    }
+
+    const yaml = generateBlueprintPlaybook(blueprint, target_hosts || 'db_servers');
+    res.json({
+      name,
+      targetHosts: target_hosts || 'db_servers',
+      yaml
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===========================
-// CHANGES (existing, unchanged)
+// CHANGES
 // ===========================
 
 // GET /api/changes
@@ -271,7 +335,17 @@ app.get('/api/changes', (req, res) => {
 
 // POST /api/changes - Tạo Change mới
 app.post('/api/changes', (req, res) => {
-  const { objective, target, domain, constraints } = req.body;
+  const objective = req.body.objective || req.body.blueprintName || req.body.action || '';
+  const target = req.body.target || req.body.targetHost || 'db_servers';
+  const domain = req.body.domain || 'CNTT';
+  const constraints = req.body.constraints || {};
+  let stepOverrides = req.body.stepOverrides || [];
+  if (!Array.isArray(stepOverrides) && req.body.actionOverrides) {
+    stepOverrides = Object.entries(req.body.actionOverrides).map(([stepIdx, inputs]) => ({
+      stepIndex: Number(stepIdx) + 1,
+      inputs
+    }));
+  }
   
   const changeId = `CHG-${String(changeCounter++).padStart(3, '0')}`;
   const change = {
@@ -279,7 +353,8 @@ app.post('/api/changes', (req, res) => {
     objective,
     target,
     domain,
-    constraints: constraints || {},
+    constraints,
+    stepOverrides,
     riskScore: null,
     policyResult: null,
     state: 'Draft',
@@ -375,21 +450,22 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
     planBlueprintName = `${matchedBlueprint.metadata.name}@${matchedBlueprint.metadata.version}`;
     planSteps = matchedBlueprint.spec.steps.map((step, idx) => {
       const stepAction = catalog.actions.find(a => a.id === step.action);
+      const override = (change.stepOverrides || []).find(o => o.stepIndex === idx + 1 || o.action === step.action);
+      const stepInputs = (override && override.inputs) ? override.inputs : (step.inputs || {});
       return {
+        stepIndex: idx + 1,
         action: step.action,
         name: stepAction ? stepAction.name : `Step ${idx + 1}: ${step.action}`,
-        provider: stepAction ? stepAction.implementation.provider : 'ansible',
-        awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 10,
-        parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
+        provider: 'ansible',
+        inputs: stepInputs
       };
     });
   } else {
     // Check 2: Does objective match an Action primitive?
     const action = catalog.actions.find(a => 
       objStr === a.id || 
-      change.objective === a.id || 
-      change.objective.includes(a.id) ||
-      a.id.includes(change.objective)
+      (objStr && objStr.includes(a.id)) ||
+      (objStr && a.id.includes(objStr))
     );
 
     if (!action) {
@@ -407,23 +483,25 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
       planBlueprintName = `${bpUsingAction.metadata.name}@${bpUsingAction.metadata.version}`;
       planSteps = bpUsingAction.spec.steps.map((step, idx) => {
         const stepAction = catalog.actions.find(a => a.id === step.action);
+        const override = (change.stepOverrides || []).find(o => o.stepIndex === idx + 1 || o.action === step.action);
+        const stepInputs = (override && override.inputs) ? override.inputs : (step.inputs || {});
         return {
+          stepIndex: idx + 1,
           action: step.action,
           name: stepAction ? stepAction.name : `Step ${idx + 1}: ${step.action}`,
-          provider: stepAction ? stepAction.implementation.provider : 'ansible',
-          awxJobTemplateId: stepAction ? stepAction.implementation.awxJobTemplateId : 10,
-          parameters: stepAction && stepAction.parameters ? stepAction.parameters : {}
+          provider: 'ansible',
+          inputs: stepInputs
         };
       });
     } else {
       // Primitive Action Execution: synthesize an autonomous 1-step plan directly
       planBlueprintName = `${action.id}-primitive@1.0.0`;
       planSteps = [{
+        stepIndex: 1,
         action: action.id,
         name: action.name || action.id,
-        provider: action.implementation.provider || 'ansible',
-        awxJobTemplateId: action.implementation.awxJobTemplateId || 10,
-        parameters: action.parameters || {}
+        provider: 'ansible',
+        inputs: {}
       }];
     }
   }
@@ -444,7 +522,7 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
 });
 
 // ===========================
-// BACKGROUND ORCHESTRATOR WORKER
+// BACKGROUND ORCHESTRATOR WORKER (Direct Ansible Playbook Runner)
 // ===========================
 async function runOrchestrator(executionId, plan, changeId) {
   const execution = state.executions.get(executionId);
@@ -452,102 +530,83 @@ async function runOrchestrator(executionId, plan, changeId) {
   if (!execution || !change) return;
 
   const catalog = getCatalog();
+  const bpName = plan.blueprint.split('@')[0];
+  const blueprint = catalog.blueprints.find(b => b.metadata.name === bpName) || catalog.blueprints[0];
+  const targetHosts = change.target || 'db_servers';
 
-  for (let i = 0; i < execution.steps.length; i++) {
-    const step = execution.steps[i];
-    execution.currentStepIndex = i;
-    step.status = 'RUNNING';
-    step.startedAt = new Date().toISOString();
+  // Build per-step overrides from plan.steps
+  const stepOverrides = (plan.steps || []).map(s => ({
+    stepIndex: s.stepIndex,
+    action: s.action,
+    inputs: s.inputs || {}
+  }));
 
-    const stepAction = catalog.actions.find(a => a.id === step.actionId);
-    const actionParams = (stepAction && stepAction.parameters) ? stepAction.parameters : (step.parameters || {});
-    const extraVars = {
-      ...actionParams,
-      target_group: change.target || actionParams.target_group || 'servers'
-    };
+  // 1. Generate the complete, parameter-bound Playbook YAML
+  const playbookContent = generateBlueprintPlaybook(blueprint, targetHosts, stepOverrides);
 
-    let awxJobId;
-    let isMock = false;
+  // 2. Prepare structured extraVars for per-action inputs
+  const extraVars = {
+    target_hosts: targetHosts,
+    action1: stepOverrides[0]?.inputs || blueprint.spec?.steps?.[0]?.inputs || {},
+    action2: stepOverrides[1]?.inputs || blueprint.spec?.steps?.[1]?.inputs || {},
+    action3: stepOverrides[2]?.inputs || blueprint.spec?.steps?.[2]?.inputs || {}
+  };
 
-    try {
-      awxJobId = await launchJob(step.awxJobTemplateId, extraVars);
-    } catch (err) {
-      console.warn(`[ORCHESTRATOR] Step ${i + 1} (${step.actionId}) AWX launch: ${err.message}. Using simulated job.`);
-      awxJobId = 100 + i + Math.floor(Math.random() * 50);
-      isMock = true;
-    }
+  writeAudit('Execution', executionId, 'orchestrator', 'playbook_generated', 'success',
+    `Generated Ansible playbook for ${blueprint.metadata.name} on target ${targetHosts}`);
 
-    step.awxJobId = awxJobId;
-    execution.awxJobId = awxJobId;
-    step.logTail = `[INFO] Launched AWX Job #${awxJobId} for ${step.actionId} (Template #${step.awxJobTemplateId})`;
-    execution.logTail += `\n[STEP ${i + 1}/${execution.steps.length}] Launched ${step.actionId} (AWX Job #${awxJobId})...`;
-
-    writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_launched', 'success',
-      `Step ${i + 1}/${execution.steps.length} (${step.actionId}): AWX Job #${awxJobId}`);
-
-    let stepSuccess = false;
-    let stepError = '';
-
-    if (isMock) {
-      // Simulate real step execution delay (2.5 seconds per step)
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      stepSuccess = true;
-    } else {
-      // Poll AWX Job status until finished
-      const maxPoll = 60;
-      let polled = 0;
-      while (polled < maxPoll) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        polled++;
-        try {
-          const jobStatus = await getJobStatus(awxJobId);
-          if (jobStatus.finished) {
-            stepSuccess = (jobStatus.status === 'successful');
-            if (!stepSuccess) stepError = `AWX Job ${awxJobId} ended with status: ${jobStatus.status}`;
-            break;
+  // 3. Run directly with Ansible CLI Runner
+  try {
+    const result = await runAnsiblePlaybook({
+      playbookContent,
+      targetHosts,
+      extraVars,
+      executionId,
+      onLog: (line) => {
+        execution.logTail += line + '\n';
+      },
+      onStepProgress: (stepIdx, status) => {
+        if (execution.steps[stepIdx]) {
+          execution.steps[stepIdx].status = status;
+          if (status === 'RUNNING') {
+            execution.currentStepIndex = stepIdx;
+            execution.steps[stepIdx].startedAt = new Date().toISOString();
           }
-        } catch (pollErr) {
-          stepError = pollErr.message;
-          break;
+          if (status === 'SUCCESS' || status === 'FAILED') {
+            execution.steps[stepIdx].finishedAt = new Date().toISOString();
+          }
         }
       }
-    }
+    });
 
-    if (stepSuccess) {
-      step.status = 'SUCCESS';
-      step.finishedAt = new Date().toISOString();
-      step.logTail += `\n[SUCCESS] Completed successfully in ${Math.round((new Date(step.finishedAt) - new Date(step.startedAt)) / 1000)}s`;
-      execution.logTail += `\n[STEP ${i + 1}/${execution.steps.length}] ✓ SUCCESS (AWX #${awxJobId})`;
-      writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_finished', 'success',
-        `Step ${i + 1} (${step.actionId}) completed successfully`);
+    if (result.success) {
+      execution.status = 'completed';
+      execution.finishedAt = new Date().toISOString();
+      change.state = 'Verified';
+      state.changes.set(changeId, change);
+
+      writeAudit('Execution', executionId, 'orchestrator', 'workflow_completed', 'success',
+        `Blueprint ${plan.blueprint} completed all ${execution.steps.length} steps successfully.`);
     } else {
-      step.status = 'FAILED';
-      step.finishedAt = new Date().toISOString();
-      step.logTail += `\n[ERROR] Step failed: ${stepError || 'Execution error'}`;
       execution.status = 'failed';
       execution.finishedAt = new Date().toISOString();
-      execution.logTail += `\n[ABORTED] Workflow halted at Step ${i + 1} (${step.actionId}) due to failure.`;
-      
       change.state = 'Failed';
       state.changes.set(changeId, change);
 
-      writeAudit('ExecutionStep', `${executionId}-step-${i + 1}`, 'orchestrator', 'step_failed', 'failed',
-        `Step ${i + 1} failed: ${stepError}`);
+      writeAudit('Execution', executionId, 'orchestrator', 'workflow_failed', 'failed',
+        `Playbook execution failed with exit code ${result.exitCode}.`);
       writeAudit('Compensation', changeId, 'orchestrator', 'NOTIFY_ONCALL', 'escalated',
-        `Workflow failed at step ${i + 1} (${step.actionId}). Triggered NOTIFY_ONCALL.`);
-      return; // Stop immediately - fail-fast!
+        `Workflow failed. Triggered NOTIFY_ONCALL.`);
     }
+  } catch (err) {
+    execution.status = 'failed';
+    execution.finishedAt = new Date().toISOString();
+    execution.logTail += `\n[FATAL ERROR] ${err.message}\n`;
+    change.state = 'Failed';
+    state.changes.set(changeId, change);
+
+    writeAudit('Execution', executionId, 'orchestrator', 'workflow_exception', 'failed', err.message);
   }
-
-  // All steps finished successfully!
-  execution.status = 'completed';
-  execution.finishedAt = new Date().toISOString();
-  execution.logTail += `\n[COMPLETED] All ${execution.steps.length} steps executed successfully!`;
-  change.state = 'Verified';
-  state.changes.set(changeId, change);
-
-  writeAudit('Execution', executionId, 'orchestrator', 'workflow_completed', 'success',
-    `Blueprint ${plan.blueprint} completed all ${execution.steps.length} steps.`);
 }
 
 // ===========================
@@ -559,14 +618,31 @@ app.get('/api/executions', (req, res) => {
   res.json(Array.from(state.executions.values()));
 });
 
-// GET /api/executions/:id - Get execution details with full steps array
+// GET /api/executions/:id - Get execution details
 app.get('/api/executions/:id', (req, res) => {
   const execution = state.executions.get(req.params.id);
   if (!execution) return res.status(404).json({ error: 'Execution not found' });
   res.json(execution);
 });
 
-// POST /api/plans/:id/execute - Execute plan (launches multi-step orchestration)
+// GET /api/executions/:id/status - Polling execution status
+app.get('/api/executions/:id/status', (req, res) => {
+  const execution = state.executions.get(req.params.id);
+  if (!execution) return res.status(404).json({ error: 'Execution not found' });
+  res.json({
+    ...execution,
+    finished: execution.status === 'completed' || execution.status === 'failed'
+  });
+});
+
+// GET /api/executions/:id/log - Real-time terminal log stream
+app.get('/api/executions/:id/log', (req, res) => {
+  const execution = state.executions.get(req.params.id);
+  if (!execution) return res.status(404).send('Execution not found');
+  res.type('text/plain').send(execution.logTail || '');
+});
+
+// POST /api/plans/:id/execute - Execute plan (launches Ansible Playbook directly)
 app.post('/api/plans/:id/execute', async (req, res) => {
   const { id } = req.params;
   const plan = state.plans.get(id);
@@ -593,15 +669,13 @@ app.post('/api/plans/:id/execute', async (req, res) => {
     planId: id,
     changeId: plan.changeId,
     blueprint: plan.blueprint,
-    awxJobId: null,
     status: 'running',
     currentStepIndex: 0,
     steps: plan.steps.map((step, idx) => ({
       stepIndex: idx,
       stepName: step.name || `Step ${idx + 1}: ${step.action}`,
       actionId: step.action,
-      awxJobTemplateId: step.awxJobTemplateId,
-      awxJobId: null,
+      inputs: step.inputs || {},
       status: 'PENDING',
       startedAt: null,
       finishedAt: null,
@@ -609,7 +683,7 @@ app.post('/api/plans/:id/execute', async (req, res) => {
     })),
     startedAt: new Date().toISOString(),
     finishedAt: null,
-    logTail: `[ORCHESTRATOR] Starting pipeline for ${plan.blueprint} (${plan.steps.length} steps)...`
+    logTail: `[ORCHESTRATOR] Starting direct Ansible execution for ${plan.blueprint} (${plan.steps.length} actions)...\n`
   };
   
   state.executions.set(executionId, execution);
@@ -620,7 +694,7 @@ app.post('/api/plans/:id/execute', async (req, res) => {
   state.changes.set(plan.changeId, change);
   
   writeAudit('Execution', executionId, 'system', 'launched', 'success', 
-    `Started orchestration for plan ${id} (${execution.steps.length} steps)`);
+    `Started direct Ansible orchestration for plan ${id} (${execution.steps.length} steps)`);
   
   // Run orchestrator asynchronously
   runOrchestrator(executionId, plan, plan.changeId);
@@ -642,7 +716,6 @@ app.get('/api/executions/:id/status', async (req, res) => {
     status: execution.status,
     currentStepIndex: execution.currentStepIndex,
     steps: execution.steps,
-    awxJobId: execution.awxJobId,
     startedAt: execution.startedAt,
     finishedAt: execution.finishedAt,
     finished: execution.status === 'completed' || execution.status === 'failed'
@@ -658,15 +731,10 @@ app.get('/api/executions/:id/log', async (req, res) => {
     return res.status(404).json({ error: 'Execution not found' });
   }
   
-  try {
-    const log = await getJobLog(execution.awxJobId);
-    res.type('text/plain').send(log);
-  } catch (error) {
-    res.status(500).type('text/plain').send(`[ERROR] Failed to fetch log: ${error.message}`);
-  }
+  res.type('text/plain').send(execution.logTail || '');
 });
 
-// GET /api/executions/:id/events - Get job events (task progress)
+// GET /api/executions/:id/events - Get execution events (step progression)
 app.get('/api/executions/:id/events', async (req, res) => {
   const { id } = req.params;
   const execution = state.executions.get(id);
@@ -675,12 +743,7 @@ app.get('/api/executions/:id/events', async (req, res) => {
     return res.status(404).json({ error: 'Execution not found' });
   }
   
-  try {
-    const events = await getJobEvents(execution.awxJobId);
-    res.json(events);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch events' });
-  }
+  res.json(execution.steps || []);
 });
 
 // GET /api/audit - Get audit log
@@ -693,6 +756,6 @@ app.get('/api/audit', (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`✓ Synapse Backend running on http://localhost:${PORT}`);
-  console.log(`✓ AWX URL: ${process.env.AWX_URL}`);
+  console.log(`✓ Ansible Direct Engine: Active (No AWX required)`);
   console.log(`✓ Ready to accept requests from frontend`);
 });

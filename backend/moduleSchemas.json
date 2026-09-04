@@ -1,0 +1,478 @@
+[
+  {
+    "module": "ansible.builtin.systemd",
+    "displayName": "Systemd Service Manager",
+    "category": "Service & Process",
+    "riskDefault": "MEDIUM",
+    "description": "Quản lý dịch vụ và tiến trình qua systemd (start, stop, restart, reload, enable)",
+    "fields": [
+      {
+        "name": "name",
+        "label": "Service Name",
+        "type": "string",
+        "required": true,
+        "placeholder": "e.g., nginx.service or {{ service_name }}",
+        "description": "Tên file systemd service đơn vị cần quản lý"
+      },
+      {
+        "name": "state",
+        "label": "Desired State",
+        "type": "choice",
+        "required": false,
+        "default": "restarted",
+        "choices": ["started", "stopped", "restarted", "reloaded"],
+        "description": "Trạng thái mong muốn sau khi task chạy"
+      },
+      {
+        "name": "enabled",
+        "label": "Enable on Boot",
+        "type": "choice",
+        "required": false,
+        "default": "yes",
+        "choices": ["yes", "no"],
+        "description": "Tự động khởi động cùng hệ thống khi boot"
+      },
+      {
+        "name": "daemon_reload",
+        "label": "Daemon Reload",
+        "type": "choice",
+        "required": false,
+        "default": "no",
+        "choices": ["yes", "no"],
+        "description": "Chạy systemctl daemon-reload trước khi thao tác"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.service",
+    "displayName": "Generic Service Manager",
+    "category": "Service & Process",
+    "riskDefault": "MEDIUM",
+    "description": "Quản lý dịch vụ hệ thống tổng quát (tương thích SysVinit, OpenRC, Upstart, Systemd)",
+    "fields": [
+      {
+        "name": "name",
+        "label": "Service Name",
+        "type": "string",
+        "required": true,
+        "placeholder": "e.g., postgresql or {{ service_name }}",
+        "description": "Tên dịch vụ cần quản lý"
+      },
+      {
+        "name": "state",
+        "label": "State",
+        "type": "choice",
+        "required": false,
+        "default": "started",
+        "choices": ["started", "stopped", "restarted", "reloaded"],
+        "description": "Trạng thái dịch vụ sau khi thực thi"
+      },
+      {
+        "name": "enabled",
+        "label": "Enabled",
+        "type": "choice",
+        "required": false,
+        "default": "yes",
+        "choices": ["yes", "no"],
+        "description": "Bật dịch vụ chạy khi khởi động"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.uri",
+    "displayName": "HTTP / REST API Ping (Healthcheck)",
+    "category": "Web & Network",
+    "riskDefault": "LOW",
+    "description": "Gửi HTTP/HTTPS request để kiểm tra health check, ping endpoint hoặc tương tác REST API",
+    "fields": [
+      {
+        "name": "url",
+        "label": "Endpoint URL",
+        "type": "string",
+        "required": true,
+        "placeholder": "http://127.0.0.1:8123/ping or {{ check_url }}",
+        "description": "Địa chỉ URL đầy đủ để gửi HTTP request"
+      },
+      {
+        "name": "method",
+        "label": "HTTP Method",
+        "type": "choice",
+        "required": false,
+        "default": "GET",
+        "choices": ["GET", "POST", "PUT", "DELETE", "HEAD"],
+        "description": "Phương thức HTTP gửi đi"
+      },
+      {
+        "name": "status_code",
+        "label": "Expected Status Code",
+        "type": "string",
+        "required": false,
+        "default": "200",
+        "placeholder": "200",
+        "description": "Mã HTTP status code hợp lệ mong đợi (ví dụ: 200 hoặc 200, 204)"
+      },
+      {
+        "name": "timeout",
+        "label": "Timeout (seconds)",
+        "type": "number",
+        "required": false,
+        "default": 10,
+        "placeholder": "10",
+        "description": "Thời gian chờ tối đa phản hồi từ endpoint (giây)"
+      },
+      {
+        "name": "return_content",
+        "label": "Return Response Content",
+        "type": "choice",
+        "required": false,
+        "default": "no",
+        "choices": ["yes", "no"],
+        "description": "Lưu nội dung body phản hồi vào biến kết quả"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.wait_for",
+    "displayName": "Port / Condition Waiter",
+    "category": "Verification & Network",
+    "riskDefault": "LOW",
+    "description": "Chờ cổng TCP mở, file xuất hiện hoặc chuỗi ký tự xuất hiện trước khi tiếp tục",
+    "fields": [
+      {
+        "name": "port",
+        "label": "Port Number",
+        "type": "number",
+        "required": false,
+        "placeholder": "e.g., 8123 or 5432",
+        "description": "Cổng mạng TCP cần chờ sẵn sàng kết nối"
+      },
+      {
+        "name": "host",
+        "label": "Host Address",
+        "type": "string",
+        "required": false,
+        "default": "127.0.0.1",
+        "placeholder": "127.0.0.1",
+        "description": "Địa chỉ IP hoặc hostname kiểm tra"
+      },
+      {
+        "name": "delay",
+        "label": "Initial Delay (s)",
+        "type": "number",
+        "required": false,
+        "default": 0,
+        "description": "Số giây chờ trước khi bắt đầu thử kiểm tra"
+      },
+      {
+        "name": "timeout",
+        "label": "Max Timeout (s)",
+        "type": "number",
+        "required": false,
+        "default": 60,
+        "description": "Thời gian tối đa chờ đợi trước khi báo lỗi timeout"
+      },
+      {
+        "name": "state",
+        "label": "Wait State",
+        "type": "choice",
+        "required": false,
+        "default": "started",
+        "choices": ["started", "stopped", "drained"],
+        "description": "Trạng thái port mong muốn (started: đã mở, stopped: đã đóng)"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.assert",
+    "displayName": "Verification Assert",
+    "category": "Verification & Audit",
+    "riskDefault": "LOW",
+    "description": "Kiểm tra điều kiện logic, đảm bảo trạng thái hệ thống khớp kỳ vọng (dùng cho Post-verify)",
+    "fields": [
+      {
+        "name": "that",
+        "label": "Assertion Condition",
+        "type": "string",
+        "required": true,
+        "placeholder": "ch_health.status == 200 and pg_health.status.ActiveState == 'active'",
+        "description": "Biểu thức logic Jinja2 kiểm tra facts (phải trả về true)"
+      },
+      {
+        "name": "fail_msg",
+        "label": "Failure Message",
+        "type": "string",
+        "required": false,
+        "default": "Verification assertion failed! Pre-requisites not met.",
+        "description": "Thông báo lỗi xuất ra nếu biểu thức kiểm tra không đúng"
+      },
+      {
+        "name": "success_msg",
+        "label": "Success Message",
+        "type": "string",
+        "required": false,
+        "default": "Verification assertion passed successfully.",
+        "description": "Thông báo thành công khi điều kiện thỏa mãn"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.copy",
+    "displayName": "Copy / Deploy Config File",
+    "category": "File Management",
+    "riskDefault": "MEDIUM",
+    "description": "Đẩy file cấu hình hoặc ghi nội dung trực tiếp xuống máy chủ đích",
+    "fields": [
+      {
+        "name": "dest",
+        "label": "Destination Path",
+        "type": "string",
+        "required": true,
+        "placeholder": "/etc/service/config.conf",
+        "description": "Đường dẫn tuyệt đối lưu file trên server đích"
+      },
+      {
+        "name": "content",
+        "label": "File Content",
+        "type": "string",
+        "required": false,
+        "placeholder": "# Configuration template content...",
+        "description": "Nội dung văn bản trực tiếp của file"
+      },
+      {
+        "name": "mode",
+        "label": "File Permissions",
+        "type": "string",
+        "required": false,
+        "default": "0644",
+        "placeholder": "0644",
+        "description": "Phân quyền Unix (ví dụ 0644, 0755)"
+      },
+      {
+        "name": "backup",
+        "label": "Backup Existing File",
+        "type": "choice",
+        "required": false,
+        "default": "yes",
+        "choices": ["yes", "no"],
+        "description": "Tự động sao lưu file cũ có gắn timestamp trước khi ghi đè"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.file",
+    "displayName": "Manage Files & Directories",
+    "category": "File Management",
+    "riskDefault": "LOW",
+    "description": "Tạo, xóa, phân quyền thư mục hoặc tệp tin",
+    "fields": [
+      {
+        "name": "path",
+        "label": "Path",
+        "type": "string",
+        "required": true,
+        "placeholder": "/var/log/app_backup",
+        "description": "Đường dẫn tệp hoặc thư mục cần thao tác"
+      },
+      {
+        "name": "state",
+        "label": "State",
+        "type": "choice",
+        "required": false,
+        "default": "directory",
+        "choices": ["directory", "file", "absent", "touch"],
+        "description": "directory: tạo thư mục; absent: xóa; touch: cập nhật timestamp"
+      },
+      {
+        "name": "mode",
+        "label": "Permissions",
+        "type": "string",
+        "required": false,
+        "default": "0755",
+        "placeholder": "0755",
+        "description": "Phân quyền file/thư mục"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.apt",
+    "displayName": "APT Package Manager (Debian/Ubuntu)",
+    "category": "Package Management",
+    "riskDefault": "MEDIUM",
+    "description": "Cài đặt, nâng cấp hoặc gỡ bỏ gói phần mềm qua apt trên Ubuntu/Debian",
+    "fields": [
+      {
+        "name": "name",
+        "label": "Package Name",
+        "type": "string",
+        "required": true,
+        "placeholder": "nginx or {{ package_name }}",
+        "description": "Tên gói phần mềm cần cài đặt"
+      },
+      {
+        "name": "state",
+        "label": "State",
+        "type": "choice",
+        "required": false,
+        "default": "present",
+        "choices": ["present", "latest", "absent"],
+        "description": "present: cài đặt; latest: bản mới nhất; absent: gỡ bỏ"
+      },
+      {
+        "name": "update_cache",
+        "label": "Update Cache (apt update)",
+        "type": "choice",
+        "required": false,
+        "default": "no",
+        "choices": ["yes", "no"],
+        "description": "Cập nhật danh sách gói repository trước khi cài"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.debug",
+    "displayName": "Debug & Print Message",
+    "category": "Diagnostics",
+    "riskDefault": "LOW",
+    "description": "In thông điệp hoặc nội dung biến facts ra màn hình log khi chạy Playbook",
+    "fields": [
+      {
+        "name": "msg",
+        "label": "Log Message",
+        "type": "string",
+        "required": false,
+        "placeholder": "Dịch vụ đã hoàn tất khởi động lại!",
+        "description": "Nội dung văn bản cần in ra log"
+      },
+      {
+        "name": "var",
+        "label": "Fact / Variable to Inspect",
+        "type": "string",
+        "required": false,
+        "placeholder": "ansible_facts or {{ output_var }}",
+        "description": "Tên biến facts cần in chi tiết giá trị"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.template",
+    "displayName": "Deploy Jinja2 Template",
+    "category": "File Management",
+    "riskDefault": "MEDIUM",
+    "description": "Render file template Jinja2 với các biến runtime và đẩy xuống máy chủ đích",
+    "fields": [
+      {
+        "name": "src",
+        "label": "Source Template File",
+        "type": "string",
+        "required": true,
+        "placeholder": "templates/nginx.conf.j2",
+        "description": "Đường dẫn file template nguồn (.j2)"
+      },
+      {
+        "name": "dest",
+        "label": "Destination Path",
+        "type": "string",
+        "required": true,
+        "placeholder": "/etc/nginx/nginx.conf",
+        "description": "Đường dẫn lưu file trên máy chủ đích"
+      },
+      {
+        "name": "mode",
+        "label": "Permissions",
+        "type": "string",
+        "required": false,
+        "default": "0644",
+        "placeholder": "0644",
+        "description": "Phân quyền Unix (0644, 0755)"
+      },
+      {
+        "name": "backup",
+        "label": "Backup Existing File",
+        "type": "choice",
+        "required": false,
+        "default": "yes",
+        "choices": ["yes", "no"],
+        "description": "Tự động sao lưu file cũ trước khi ghi đè"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.yum",
+    "displayName": "YUM Package Manager (RHEL/CentOS)",
+    "category": "Package Management",
+    "riskDefault": "MEDIUM",
+    "description": "Cài đặt, nâng cấp hoặc gỡ bỏ gói phần mềm qua yum trên RHEL/CentOS/Rocky Linux",
+    "fields": [
+      {
+        "name": "name",
+        "label": "Package Name",
+        "type": "string",
+        "required": true,
+        "placeholder": "httpd or {{ package_name }}",
+        "description": "Tên gói phần mềm cần cài đặt"
+      },
+      {
+        "name": "state",
+        "label": "State",
+        "type": "choice",
+        "required": false,
+        "default": "present",
+        "choices": ["present", "latest", "absent"],
+        "description": "present: cài đặt; latest: bản mới nhất; absent: gỡ bỏ"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.command",
+    "displayName": "Arbitrary CLI Command",
+    "category": "Execution / CLI",
+    "riskDefault": "HIGH",
+    "warning": "Cảnh báo (Risk: HIGH): Module chạy command trực tiếp. Khuyến cáo chỉ dùng khi hệ thống không có module chuyên dụng có sẵn tính năng idempotent.",
+    "description": "Thực thi câu lệnh command trực tiếp trên máy chủ mục tiêu mà không qua shell",
+    "fields": [
+      {
+        "name": "cmd",
+        "label": "Command to Execute",
+        "type": "string",
+        "required": true,
+        "placeholder": "/usr/local/bin/backup.sh --full",
+        "description": "Dòng lệnh chạy trực tiếp cùng tham số"
+      },
+      {
+        "name": "creates",
+        "label": "Creates (Skip if exists)",
+        "type": "string",
+        "required": false,
+        "placeholder": "/var/run/backup.done",
+        "description": "Không chạy lệnh nếu file này đã tồn tại (đảm bảo idempotent)"
+      }
+    ]
+  },
+  {
+    "module": "ansible.builtin.shell",
+    "displayName": "Shell Script / Pipeline",
+    "category": "Execution / CLI",
+    "riskDefault": "HIGH",
+    "warning": "Cảnh báo rủi ro cao (Risk: HIGH): Module shell thực thi qua /bin/sh hoặc /bin/bash, hỗ trợ pipe và redirect. Tiềm ẩn nguy cơ Command Injection nếu không kiểm soát tham số đầu vào!",
+    "description": "Thực thi lệnh shell có sử dụng pipes (|), redirects (>) hoặc biến môi trường",
+    "fields": [
+      {
+        "name": "cmd",
+        "label": "Shell Script Line",
+        "type": "string",
+        "required": true,
+        "placeholder": "uptime | awk '{print $3}'",
+        "description": "Lệnh shell đầy đủ"
+      },
+      {
+        "name": "executable",
+        "label": "Shell Executable",
+        "type": "string",
+        "required": false,
+        "default": "/bin/bash",
+        "placeholder": "/bin/bash",
+        "description": "Trình thông dịch shell sử dụng để thực thi lệnh"
+      }
+    ]
+  }
+]

@@ -1,134 +1,318 @@
 {
   "actions": [
     {
-      "id": "DB_RESTART_CYCLE",
-      "name": "Database Restart Cycle",
-      "domain": "CNTT",
-      "capability": "RESTART_WITH_REBOOT",
-      "inputs": [
-        {
-          "name": "target_group",
-          "type": "string",
-          "default": "db_servers",
-          "required": true
-        }
-      ],
-      "implementation": {
-        "provider": "ansible",
-        "awxJobTemplateId": 10,
-        "estimatedDurationSec": 420
-      },
-      "verification": {
-        "type": "embedded",
-        "note": "Playbook tự assert ClickHouse và PostgreSQL active bằng ansible.builtin.assert; job success/fail đã phản ánh đúng kết quả verify, không cần bước verify tách riêng ở bản v1."
-      },
-      "compensation": {
-        "type": "escalate",
-        "action": "NOTIFY_ONCALL",
-        "note": "Reboot server không có thao tác rollback thật sự — compensation ở đây là báo động, không phải hoàn tác."
-      },
-      "riskDefault": "HIGH"
-    },
-    {
-      "id": "DATABASE_HEALTH_CHECK",
-      "name": "Database Health Check",
+      "id": "DB_PRECHECK",
+      "name": "Action 1: Pre-check DB Services",
       "domain": "CNTT",
       "capability": "HEALTH_CHECK",
+      "description": "Kiểm tra tình trạng ClickHouse qua HTTP ping và PostgreSQL qua systemd trước khi bảo trì",
       "inputs": [
         {
-          "name": "target_group",
+          "name": "clickhouse_url",
+          "label": "ClickHouse Ping URL",
           "type": "string",
-          "default": "servers",
-          "required": true
+          "default": "http://127.0.0.1:8123/ping",
+          "required": true,
+          "validation": "^https?:\\/\\/.+",
+          "placeholder": "http://127.0.0.1:8123/ping",
+          "description": "URL endpoint HTTP ping của ClickHouse"
+        },
+        {
+          "name": "clickhouse_timeout",
+          "label": "Ping Timeout (s)",
+          "type": "number",
+          "default": 10,
+          "required": true,
+          "validation": "^[1-9][0-9]*$",
+          "placeholder": "10",
+          "description": "Thời gian chờ tối đa khi kiểm tra HTTP ping (giây)"
+        },
+        {
+          "name": "postgres_service",
+          "label": "PostgreSQL Service Name",
+          "type": "string",
+          "default": "postgresql@18-main.service",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$",
+          "placeholder": "postgresql@18-main.service",
+          "description": "Tên systemd service của PostgreSQL"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "is_ch_ok",
+          "type": "boolean",
+          "description": "ClickHouse HTTP ping thành công (status == 200)"
+        },
+        {
+          "name": "is_pg_ok",
+          "type": "boolean",
+          "description": "PostgreSQL service đang active"
+        },
+        {
+          "name": "ch_status_code",
+          "type": "number",
+          "description": "HTTP Status Code trả về"
+        },
+        {
+          "name": "pg_state",
+          "type": "string",
+          "description": "Trạng thái systemd chi tiết"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Ping ClickHouse HTTP endpoint",
+          "module": "ansible.builtin.uri",
+          "args": {
+            "url": "{{ clickhouse_url }}",
+            "timeout": "{{ clickhouse_timeout }}"
+          },
+          "register": "ch_health",
+          "failed_when": false
+        },
+        {
+          "name": "Check PostgreSQL Systemd Service Status",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ postgres_service }}"
+          },
+          "register": "pg_health",
+          "failed_when": false
         }
       ],
       "implementation": {
         "provider": "ansible",
-        "awxJobTemplateId": 11,
-        "estimatedDurationSec": 300,
-        "playbookRef": "health_check.yml"
+        "estimatedDurationSec": 30
       },
       "verification": {
         "type": "embedded",
-        "note": "Playbook self-verifies"
+        "note": "Pre-check tự lưu facts vào output_action1 phục vụ các bước sau"
       },
       "compensation": {
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "LOW",
-      "parameters": {
-        "action_name": "Database Health Check",
-        "target_group": "db_servers",
-        "endpoint": "http://localhost:8123/ping",
-        "check_type": "http",
-        "timeout": 60
+      "riskDefault": "LOW"
+    },
+    {
+      "id": "DB_RESTART_CYCLE",
+      "name": "Action 2: Restart Services Cycle",
+      "domain": "CNTT",
+      "capability": "SERVICE_RESTART",
+      "description": "Dừng dịch vụ ClickHouse & Postgres, khởi động lại server và start lại dịch vụ",
+      "inputs": [
+        {
+          "name": "clickhouse_service",
+          "label": "ClickHouse Service Name",
+          "type": "string",
+          "default": "clickhouse-server",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$",
+          "placeholder": "clickhouse-server",
+          "description": "Tên systemd service ClickHouse"
+        },
+        {
+          "name": "postgres_service",
+          "label": "PostgreSQL Service Name",
+          "type": "string",
+          "default": "postgresql@18-main.service",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$",
+          "placeholder": "postgresql@18-main.service",
+          "description": "Tên systemd service PostgreSQL"
+        },
+        {
+          "name": "reboot_timeout",
+          "label": "Reboot Timeout (s)",
+          "type": "number",
+          "default": 300,
+          "required": true,
+          "validation": "^[1-9][0-9]*$",
+          "placeholder": "300",
+          "description": "Thời gian tối đa chờ máy chủ khởi động lại và kết nối SSH trở lại"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "restart_timestamp",
+          "type": "string",
+          "description": "Thời điểm khởi động lại xong (ISO8601)"
+        },
+        {
+          "name": "uptime",
+          "type": "string",
+          "description": "Uptime máy chủ sau khi khởi động"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Stop ClickHouse service",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ clickhouse_service }}",
+            "state": "stopped"
+          }
+        },
+        {
+          "name": "Stop PostgreSQL service",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ postgres_service }}",
+            "state": "stopped"
+          }
+        },
+        {
+          "name": "Reboot server",
+          "module": "ansible.builtin.reboot",
+          "args": {
+            "reboot_timeout": "{{ reboot_timeout }}"
+          }
+        },
+        {
+          "name": "Start ClickHouse service",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ clickhouse_service }}",
+            "state": "started"
+          }
+        },
+        {
+          "name": "Start PostgreSQL service",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ postgres_service }}",
+            "state": "started"
+          }
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "estimatedDurationSec": 360
       },
-      "templateId": "HEALTH_CHECK"
+      "verification": {
+        "type": "embedded",
+        "note": "Kiểm tra uptime server ngay sau reboot"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL",
+        "note": "Reboot server không rollback được - leo thang on-call khi gặp lỗi"
+      },
+      "riskDefault": "HIGH"
+    },
+    {
+      "id": "DB_POST_VERIFY",
+      "name": "Action 3: Post-Restart Verification",
+      "domain": "CNTT",
+      "capability": "POST_VERIFICATION",
+      "description": "Xác thực phục hồi của ClickHouse & PostgreSQL, so sánh trước/sau và xuất báo cáo tổng kết",
+      "inputs": [
+        {
+          "name": "clickhouse_url",
+          "label": "ClickHouse Ping URL",
+          "type": "string",
+          "default": "http://127.0.0.1:8123/ping",
+          "required": true,
+          "validation": "^https?:\\/\\/.+",
+          "placeholder": "http://127.0.0.1:8123/ping",
+          "description": "URL endpoint HTTP ping kiểm tra phục hồi"
+        },
+        {
+          "name": "postgres_service",
+          "label": "PostgreSQL Service Name",
+          "type": "string",
+          "default": "postgresql@18-main.service",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$",
+          "placeholder": "postgresql@18-main.service",
+          "description": "Tên systemd service PostgreSQL"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "ch_final",
+          "type": "number",
+          "description": "Mã HTTP status sau phục hồi"
+        },
+        {
+          "name": "pg_final",
+          "type": "string",
+          "description": "Trạng thái systemd sau phục hồi"
+        },
+        {
+          "name": "verdict",
+          "type": "string",
+          "description": "Kết luận tổng thể: PASS hoặc FAIL"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Re-check ClickHouse Ping",
+          "module": "ansible.builtin.uri",
+          "args": {
+            "url": "{{ clickhouse_url }}",
+            "timeout": 10
+          },
+          "register": "verify_ch",
+          "failed_when": false
+        },
+        {
+          "name": "Re-check PostgreSQL Status",
+          "module": "ansible.builtin.systemd",
+          "args": {
+            "name": "{{ postgres_service }}"
+          },
+          "register": "verify_pg"
+        },
+        {
+          "name": "Assert both services active",
+          "module": "ansible.builtin.assert",
+          "args": {
+            "that": "verify_ch.status == 200 and verify_pg.status.ActiveState == 'active'",
+            "fail_msg": "CRITICAL: Restart cycle verification failed!",
+            "success_msg": "SUCCESS: All DB services are healthy!"
+          }
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "estimatedDurationSec": 30
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Assert HTTP 200 và active systemd state"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      },
+      "riskDefault": "LOW"
     }
   ],
   "blueprints": [
     {
       "kind": "AutomationBlueprint",
       "metadata": {
-        "name": "db-restart-cycle",
-        "version": "1.0"
-      },
-      "spec": {
-        "owner": "CNTT-BO",
-        "domain": "CNTT",
-        "steps": [
-          {
-            "action": "DB_RESTART_CYCLE"
-          }
-        ],
-        "compensation": {
-          "onFailure": "NOTIFY_ONCALL"
-        },
-        "status": "PUBLISHED"
-      }
-    },
-    {
-      "kind": "AutomationBlueprint",
-      "metadata": {
-        "name": "db-maintenance-workflow",
+        "name": "db-maintenance-pipeline",
         "version": "1.0.0"
       },
       "spec": {
         "owner": "DBA-Team",
         "domain": "CNTT",
+        "description": "Quy trình bảo trì Database hoàn chỉnh: Pre-check -> Reboot Cycle -> Post-verify (3 Action chuỗi)",
         "steps": [
           {
-            "action": "DATABASE_HEALTH_CHECK"
+            "stepIndex": 1,
+            "action": "DB_PRECHECK"
           },
           {
+            "stepIndex": 2,
             "action": "DB_RESTART_CYCLE"
           },
           {
-            "action": "DATABASE_HEALTH_CHECK"
-          }
-        ],
-        "compensation": {
-          "onFailure": "NOTIFY_ONCALL"
-        },
-        "status": "PUBLISHED"
-      }
-    },
-    {
-      "kind": "AutomationBlueprint",
-      "metadata": {
-        "name": "restart-service",
-        "version": "1.0.0"
-      },
-      "spec": {
-        "owner": "DevOps-Admin",
-        "domain": "CNTT",
-        "steps": [
-          {
-            "action": "DATABASE_HEALTH_CHECK"
-          },
-          {
-            "action": "DB_RESTART_CYCLE"
+            "stepIndex": 3,
+            "action": "DB_POST_VERIFY"
           }
         ],
         "compensation": {

@@ -16,11 +16,13 @@ const state = {
     activeChangeId: null,
     composerSteps: [],
     currentExecution: null,
+    moduleSchemas: [],
+    newActionDraft: null,
     backendUrl: 'http://localhost:4000'
 };
 
 // Initialize App
-document.addEventListener('DOMContentLoaded', async () => {
+async function initApp() {
     initNavigation();
     initRoleSelector();
     
@@ -28,7 +30,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadInitialData();
     
     renderView('home');
-});
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+} else {
+    initApp();
+}
 
 // Load initial data from backend
 async function loadInitialData() {
@@ -49,6 +57,16 @@ async function loadInitialData() {
         const blueprintsRes = await fetch(`${state.backendUrl}/api/blueprints`);
         if (blueprintsRes.ok) {
             state.blueprints = await blueprintsRes.json();
+        }
+
+        // Load module schemas for Task Definition Builder
+        try {
+            const schemasRes = await fetch(`${state.backendUrl}/api/module-schemas`);
+            if (schemasRes.ok) {
+                state.moduleSchemas = await schemasRes.json();
+            }
+        } catch (err) {
+            console.warn('Could not load module schemas:', err);
         }
 
         // Load executions
@@ -225,18 +243,20 @@ function renderHomeView() {
 }
 
 // ============================================================
-// ACTIONS VIEW — Dynamic CRUD
+// ACTIONS VIEW — Dynamic CRUD (Composable Action Primitives)
 // ============================================================
 function renderActionsView() {
     return `
         <div class="view-header">
-            <h2 class="card-title">Action Catalog</h2>
+            <div>
+                <h2 class="card-title" style="margin: 0;">Action Catalog</h2>
+                <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">Atomic automation building blocks with input/output contracts & real Ansible task definitions</div>
+            </div>
             <div style="display: flex; gap: 1rem;">
-                <button class="btn btn-primary" onclick="openActionBuilderModal()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                    <span style="font-size: 1.2rem; margin-right: 0.5rem;">🔄</span>
-                    Create from Template
+                <button class="btn btn-primary" onclick="openNewActionModal()" style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
+                    <span style="font-size: 1.1rem; margin-right: 0.4rem;">⚡</span>
+                    + Create Action Primitive
                 </button>
-                <button class="btn btn-secondary" onclick="openNewActionModal()">+ Manual Entry</button>
             </div>
         </div>
         
@@ -246,9 +266,9 @@ function renderActionsView() {
                 <div class="metric-value">${state.actions.length}</div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">From Templates</div>
-                <div class="metric-value" style="color: #a78bfa;">${state.actions.filter(a => a.templateId).length}</div>
-                <div class="metric-subtitle">auto-generated</div>
+                <div class="metric-label">With Task Definition</div>
+                <div class="metric-value" style="color: #6ee7b7;">${state.actions.filter(a => a.task_template && a.task_template.length > 0).length}</div>
+                <div class="metric-subtitle">runnable tasks</div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Domains</div>
@@ -270,33 +290,46 @@ function renderActionsView() {
                         <th>Domain</th>
                         <th>Capability</th>
                         <th>Provider</th>
-                        <th>AWX Template</th>
+                        <th>Ansible Module / Logic</th>
                         <th>Risk</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${state.actions.length > 0 ? state.actions.map(action => `
+                    ${state.actions.length > 0 ? state.actions.map(action => {
+                        const moduleName = action.task_template && action.task_template[0] && action.task_template[0].module 
+                            ? action.task_template[0].module.replace('ansible.builtin.', '')
+                            : (action.implementation?.provider || 'ansible');
+                        return `
                         <tr>
                             <td>
-                                <code style="color: #60a5fa;">${action.id}</code>
-                                ${action.templateId ? `<span class="badge badge-info" style="margin-left: 0.5rem; font-size: 0.65rem; background: #8b5cf6;">from template</span>` : ''}
+                                <code style="color: #60a5fa; font-weight: 600;">${action.id}</code>
                             </td>
-                            <td>${action.name}</td>
+                            <td>
+                                <div style="font-weight: 500;">${action.name}</div>
+                                ${action.description ? `<div style="font-size: 0.75rem; color: #9ca3af;">${action.description}</div>` : ''}
+                            </td>
                             <td><span class="badge badge-info">${action.domain}</span></td>
-                            <td>${action.capability}</td>
-                            <td>${action.implementation.provider}</td>
-                            <td><code>#${action.implementation.awxJobTemplateId}</code></td>
+                            <td><span style="font-size: 0.8rem; color: #d1d5db; font-family: monospace;">${action.capability}</span></td>
+                            <td><span style="color: #9ca3af; font-size: 0.8rem;">${action.implementation?.provider || 'ansible'}</span></td>
+                            <td>
+                                <span class="badge" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; font-family: monospace; font-size: 0.72rem;">
+                                    ${moduleName}
+                                </span>
+                            </td>
                             <td><span class="badge badge-${action.riskDefault === 'HIGH' || action.riskDefault === 'CRITICAL' ? 'danger' : action.riskDefault === 'MEDIUM' ? 'warning' : 'success'}">${action.riskDefault}</span></td>
                             <td>
-                                <button class="btn btn-secondary" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="openEditActionModal('${action.id}')">Edit</button>
-                                <button class="btn btn-secondary" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; color: #fca5a5;" onclick="confirmDeleteAction('${action.id}')">Delete</button>
+                                <div style="display: flex; gap: 0.4rem;">
+                                    <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="openEditActionModal('${action.id}')">Edit</button>
+                                    <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem; color: #fca5a5;" onclick="confirmDeleteAction('${action.id}')">Delete</button>
+                                </div>
                             </td>
                         </tr>
-                    `).join('') : `
+                        `;
+                    }).join('') : `
                         <tr>
-                            <td colspan="8" style="text-align: center; color: #9ca3af; padding: 2rem;">
-                                No actions yet. Click "Create from Template" to get started quickly!
+                            <td colspan="8" style="text-align: center; color: #9ca3af; padding: 2.5rem;">
+                                No actions in catalog. Click "+ Create Action Primitive" to define your first action!
                             </td>
                         </tr>
                     `}
@@ -307,7 +340,7 @@ function renderActionsView() {
 }
 
 // ============================================================
-// BLUEPRINTS VIEW — Dynamic CRUD
+// BLUEPRINTS VIEW — Dynamic CRUD (Skeleton & Clone-to-Change)
 // ============================================================
 function renderBlueprintsView() {
     const published = state.blueprints.filter(b => b.spec.status === 'PUBLISHED').length;
@@ -316,10 +349,13 @@ function renderBlueprintsView() {
 
     return `
         <div class="view-header">
-            <h2 class="card-title">Blueprints (Workflows)</h2>
+            <div>
+                <h2 class="card-title" style="margin: 0;">Blueprints (Workflows)</h2>
+                <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">Fixed pipeline skeletons wrapping atomic Actions · Reusable templates ready to clone into Change requests</div>
+            </div>
             <button class="btn btn-primary" onclick="openNewBlueprintModal()" style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
                 <span style="font-size: 1.1rem; margin-right: 0.4rem;">🧩</span>
-                Blueprint Composer
+                + Create Blueprint
             </button>
         </div>
         
@@ -344,26 +380,53 @@ function renderBlueprintsView() {
             ` : ''}
         </div>
         
-        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem;">
-            ${state.blueprints.length > 0 ? state.blueprints.map(bp => `
-                <div class="card" style="cursor: pointer; transition: all 0.2s; border-left: 3px solid ${bp.spec.status === 'PUBLISHED' ? '#6ee7b7' : bp.spec.status === 'DRAFT' ? '#fcd34d' : '#60a5fa'};" onclick="openEditBlueprintModal('${bp.metadata.name}')">
-                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                        <div>
-                            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">${bp.metadata.name}</h3>
-                            <div style="font-size: 0.875rem; color: #9ca3af;">v${bp.metadata.version}</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1.5rem;">
+            ${state.blueprints.length > 0 ? state.blueprints.map(bp => {
+                const stepsCount = (bp.spec && bp.spec.steps) ? bp.spec.steps.length : 0;
+                return `
+                <div class="card" style="transition: all 0.2s; border-left: 3px solid ${bp.spec.status === 'PUBLISHED' ? '#6ee7b7' : bp.spec.status === 'DRAFT' ? '#fcd34d' : '#60a5fa'}; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div>
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                            <div>
+                                <h3 style="font-size: 1.15rem; font-weight: 600; margin-bottom: 0.25rem; color: #f9fafb; cursor: pointer;" onclick="openBlueprintDetailModal('${bp.metadata.name}')">
+                                    ${bp.metadata.name}
+                                </h3>
+                                <div style="font-size: 0.8rem; color: #9ca3af;">v${bp.metadata.version} · ${bp.spec.domain} · Owner: ${bp.spec.owner}</div>
+                            </div>
+                            <span class="badge badge-${bp.spec.status === 'PUBLISHED' ? 'success' : bp.spec.status === 'DRAFT' ? 'warning' : 'info'}">${bp.spec.status}</span>
                         </div>
-                        <span class="badge badge-${bp.spec.status === 'PUBLISHED' ? 'success' : bp.spec.status === 'DRAFT' ? 'warning' : 'info'}">${bp.spec.status}</span>
+                        <div style="font-size: 0.85rem; color: #d1d5db; margin-bottom: 0.75rem; line-height: 1.4;">${bp.spec.description || 'Composable Ansible Orchestration Blueprint Skeleton'}</div>
+                        <div style="font-size: 0.8rem; margin-bottom: 1rem; background: #111827; padding: 0.5rem 0.75rem; border-radius: 0.375rem; border: 1px solid #1f2937;">
+                            <strong style="color: #9ca3af; display: block; margin-bottom: 0.3rem;">Sequential Skeleton Pipeline (${stepsCount} actions):</strong>
+                            <div style="display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;">
+                                ${(bp.spec.steps || []).map((s, idx) => {
+                                    const aId = typeof s === 'string' ? s : s.action;
+                                    return `<span style="font-family: monospace; font-size: 0.72rem; color: #60a5fa; background: #1e293b; padding: 0.15rem 0.4rem; border-radius: 0.25rem; border: 1px solid #334155;">${idx + 1}. ${aId}</span>`;
+                                }).join(' <span style="color: #6b7280; font-size: 0.7rem;">➜</span> ')}
+                            </div>
+                        </div>
                     </div>
-                    <div style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.75rem;">Owner: ${bp.spec.owner}</div>
-                    <div style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.75rem;">Domain: ${bp.spec.domain}</div>
-                    <div style="font-size: 0.8rem;">
-                        <strong>Steps:</strong>
-                        ${bp.spec.steps.map(s => `<code style="color: #60a5fa; margin-left: 0.25rem;">${s.action}</code>`).join(' → ')}
+                    <div style="display: flex; gap: 0.4rem; justify-content: space-between; border-top: 1px solid #374151; padding-top: 0.75rem; align-items: center; margin-top: 0.5rem;">
+                        <div style="display: flex; gap: 0.35rem;">
+                            <button class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.55rem;" onclick="openBlueprintDetailModal('${bp.metadata.name}')">
+                                👁 Skeleton
+                            </button>
+                            <button class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.55rem;" onclick="openYamlPreviewModal('${bp.metadata.name}')">
+                                📄 YAML
+                            </button>
+                            <button class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.55rem;" onclick="openEditBlueprintModal('${bp.metadata.name}')">
+                                ⚙ Edit
+                            </button>
+                        </div>
+                        <button class="btn btn-primary" style="font-size: 0.75rem; padding: 0.35rem 0.75rem; background: linear-gradient(135deg, #10b981 0%, #059669 100%); font-weight: 600;" onclick="openNewChangeModal('${bp.metadata.name}')">
+                            🚀 Clone to Change
+                        </button>
                     </div>
                 </div>
-            `).join('') : `
+                `;
+            }).join('') : `
                 <div class="card" style="text-align: center; color: #9ca3af; padding: 3rem;">
-                    No blueprints yet. Create Actions first, then build Blueprints from them.
+                    No blueprints yet. Assemble Action primitives into a Blueprint wrapper!
                 </div>
             `}
         </div>
@@ -625,13 +688,11 @@ function renderPipelineStepsTracker(change) {
                                 </div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                ${st.awxJobId ? `
-                                    <span class="awx-badge" title="AWX Execution Job ID">
-                                        🚀 AWX #${st.awxJobId}
-                                    </span>
-                                ` : ''}
+                                <span class="awx-badge" style="border-color: #3b82f6; color: #93c5fd;" title="Ansible Playbook Play">
+                                    📜 Action ${idx + 1}
+                                </span>
                                 <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
-                                    ${st.status}
+                                    ${statusClass}
                                 </span>
                             </div>
                         </div>
@@ -789,96 +850,491 @@ function renderAuditTable() {
 }
 
 // ============================================================
-// MODAL — New Action
+// MODAL — 3-TAB ACTION PRIMITIVE CREATOR & TASK DEFINITION BUILDER
 // ============================================================
+
 function openNewActionModal() {
+    // Default draft state
+    state.newActionDraft = {
+        currentTab: 'metadata',
+        id: '',
+        name: '',
+        domain: 'CNTT',
+        capability: 'SERVICE_RESTART',
+        description: '',
+        riskDefault: 'LOW',
+        inputs: [
+            { name: 'service_name', label: 'Service Name', type: 'string', default: 'nginx.service', required: true, validation: '^[a-zA-Z0-9@._-]+$' }
+        ],
+        outputs: [
+            { name: 'service_status', type: 'string', description: 'Systemd active state' }
+        ],
+        selectedModule: 'ansible.builtin.systemd',
+        moduleParams: {
+            name: '{{ service_name }}',
+            state: 'restarted',
+            enabled: 'yes'
+        },
+        taskRegister: 'service_status'
+    };
+
+    renderActionCreatorModal();
+}
+
+function renderActionCreatorModal() {
+    const draft = state.newActionDraft;
+    const schemas = state.moduleSchemas || [];
+    const currentSchema = schemas.find(s => s.module === draft.selectedModule) || schemas[0];
+
     const modal = `
         <div class="modal-overlay" onclick="closeModal(event)">
-            <div class="modal" onclick="event.stopPropagation()" style="max-width: 600px;">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 820px; width: 95%;">
                 <div class="modal-header">
-                    <h2 class="modal-title">New Action</h2>
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="font-size: 1.5rem;">⚡</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0; font-size: 1.25rem;">Create Action Primitive</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Define an atomic automation block: Metadata → Inputs/Outputs Contract → Ansible Task Logic</div>
+                        </div>
+                    </div>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
-                <div class="modal-body">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div>
-                            <label class="form-label">Action ID *</label>
-                            <input type="text" id="actionId" class="form-input" placeholder="e.g., SERVICE_HEALTH_CHECK">
-                            <div style="font-size: 0.7rem; color: #6b7280; margin-top: 0.25rem;">UPPER_SNAKE_CASE</div>
+                
+                <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+                    <!-- 3-Tab Header -->
+                    <div class="action-tabs-nav">
+                        <button type="button" class="action-tab-btn ${draft.currentTab === 'metadata' ? 'active' : ''}" onclick="switchActionCreatorTab('metadata')">
+                            1. Metadata
+                        </button>
+                        <button type="button" class="action-tab-btn ${draft.currentTab === 'inputs_outputs' ? 'active' : ''}" onclick="switchActionCreatorTab('inputs_outputs')">
+                            2. Inputs & Outputs Contract
+                            <span class="action-tab-badge">${draft.inputs.length} in / ${draft.outputs.length} out</span>
+                        </button>
+                        <button type="button" class="action-tab-btn ${draft.currentTab === 'task_builder' ? 'active' : ''}" onclick="switchActionCreatorTab('task_builder')">
+                            3. Task Definition Builder 🆕
+                            <span class="action-tab-badge" style="background: #059669; color: white;">YAML</span>
+                        </button>
+                    </div>
+
+                    <!-- TAB 1: METADATA -->
+                    <div id="tabContent_metadata" style="display: ${draft.currentTab === 'metadata' ? 'block' : 'none'};">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                            <div>
+                                <label class="form-label">Action ID * <span style="font-size: 0.72rem; color: #9ca3af;">(UPPER_SNAKE_CASE)</span></label>
+                                <input type="text" id="actionIdInput" class="form-input" value="${draft.id}" placeholder="e.g., NGINX_RESTART" oninput="this.value = this.value.toUpperCase(); state.newActionDraft.id = this.value;">
+                                <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.25rem;">Unique action identifier within catalog</div>
+                            </div>
+                            <div>
+                                <label class="form-label">Display Name *</label>
+                                <input type="text" id="actionNameInput" class="form-input" value="${draft.name}" placeholder="e.g., Restart Nginx Web Service" oninput="state.newActionDraft.name = this.value;">
+                            </div>
                         </div>
-                        <div>
-                            <label class="form-label">Display Name *</label>
-                            <input type="text" id="actionName" class="form-input" placeholder="e.g., Service Health Check">
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                            <div>
+                                <label class="form-label">Domain *</label>
+                                <select id="actionDomainInput" class="form-input" onchange="state.newActionDraft.domain = this.value;">
+                                    ${['CNTT', 'IP', '5G', 'Transport'].map(d => `<option value="${d}" ${draft.domain === d ? 'selected' : ''}>${d}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="form-label">Capability *</label>
+                                <select id="actionCapabilityInput" class="form-input" onchange="state.newActionDraft.capability = this.value;">
+                                    ${['SERVICE_RESTART', 'HEALTH_CHECK', 'POST_VERIFY', 'FILE_CONFIG', 'CLI_COMMAND', 'CUSTOM'].map(c => `<option value="${c}" ${draft.capability === c ? 'selected' : ''}>${c}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="form-label">Default Risk *</label>
+                                <select id="actionRiskInput" class="form-input" onchange="state.newActionDraft.riskDefault = this.value;">
+                                    ${['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map(r => `<option value="${r}" ${draft.riskDefault === r ? 'selected' : ''}>${r}</option>`).join('')}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 1.25rem;">
+                            <label class="form-label">Description</label>
+                            <textarea id="actionDescInput" class="form-input" rows="2" placeholder="Describe the purpose of this atomic primitive..." oninput="state.newActionDraft.description = this.value;">${draft.description}</textarea>
+                        </div>
+
+                        <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+                            <button type="button" class="btn btn-primary" onclick="switchActionCreatorTab('inputs_outputs')">
+                                Next: Inputs & Outputs Contract ➔
+                            </button>
                         </div>
                     </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-                        <div>
-                            <label class="form-label">Domain *</label>
-                            <select id="actionDomain" class="form-input">
-                                <option value="CNTT">CNTT</option>
-                                <option value="IP">IP / Backbone</option>
-                                <option value="5G">5G Core</option>
-                                <option value="Transport">Transport</option>
+
+                    <!-- TAB 2: INPUTS & OUTPUTS BUILDER -->
+                    <div id="tabContent_inputs_outputs" style="display: ${draft.currentTab === 'inputs_outputs' ? 'block' : 'none'};">
+                        <!-- Inputs Section -->
+                        <div style="margin-bottom: 2rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                                <div>
+                                    <h3 style="font-size: 0.95rem; color: #f3f4f6; margin: 0;">1. Input Parameters (Đầu Vào Cần Cung Cấp)</h3>
+                                    <div style="font-size: 0.75rem; color: #9ca3af;">Các biến đầu vào operator có thể tùy chỉnh khi clone sang Change</div>
+                                </div>
+                                <button type="button" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;" onclick="addDraftInput()">
+                                    + Add Input Parameter
+                                </button>
+                            </div>
+
+                            <div id="draftInputsContainer">
+                                ${draft.inputs.map((inp, idx) => `
+                                    <div class="param-builder-row">
+                                        <div style="flex: 1.2;">
+                                            <input type="text" class="form-input" placeholder="var_name" value="${inp.name}" style="font-family: monospace; font-size: 0.8rem;" oninput="state.newActionDraft.inputs[${idx}].name = this.value; updateActionTaskYamlPreview();">
+                                        </div>
+                                        <div style="flex: 1.5;">
+                                            <input type="text" class="form-input" placeholder="Display Label" value="${inp.label}" style="font-size: 0.8rem;" oninput="state.newActionDraft.inputs[${idx}].label = this.value;">
+                                        </div>
+                                        <div style="flex: 1;">
+                                            <select class="form-input" style="font-size: 0.8rem;" onchange="state.newActionDraft.inputs[${idx}].type = this.value;">
+                                                <option value="string" ${inp.type === 'string' ? 'selected' : ''}>string</option>
+                                                <option value="number" ${inp.type === 'number' ? 'selected' : ''}>number</option>
+                                                <option value="boolean" ${inp.type === 'boolean' ? 'selected' : ''}>boolean</option>
+                                            </select>
+                                        </div>
+                                        <div style="flex: 1.5;">
+                                            <input type="text" class="form-input" placeholder="Default Value" value="${inp.default !== undefined ? inp.default : ''}" style="font-size: 0.8rem;" oninput="state.newActionDraft.inputs[${idx}].default = this.value;">
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 0.25rem;">
+                                            <label style="font-size: 0.75rem; color: #9ca3af; display: flex; align-items: center; gap: 0.2rem;">
+                                                <input type="checkbox" ${inp.required ? 'checked' : ''} onchange="state.newActionDraft.inputs[${idx}].required = this.checked;">
+                                                Req
+                                            </label>
+                                            <button type="button" class="btn btn-secondary" style="color: #fca5a5; padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="removeDraftInput(${idx})">✕</button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <!-- Outputs Section -->
+                        <div style="margin-bottom: 1.5rem; border-top: 1px solid #374151; padding-top: 1.25rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                                <div>
+                                    <h3 style="font-size: 0.95rem; color: #f3f4f6; margin: 0;">2. Exposed Facts / Outputs (Kết Quả Xuất Ra)</h3>
+                                    <div style="font-size: 0.75rem; color: #9ca3af;">Các facts được export vào Ansible runtime facts để các bước sau tái sử dụng</div>
+                                </div>
+                                <button type="button" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;" onclick="addDraftOutput()">
+                                    + Add Output Fact
+                                </button>
+                            </div>
+
+                            <div id="draftOutputsContainer">
+                                ${draft.outputs.map((out, idx) => `
+                                    <div class="param-builder-row">
+                                        <div style="flex: 1.5;">
+                                            <input type="text" class="form-input" placeholder="fact_name" value="${out.name}" style="font-family: monospace; font-size: 0.8rem; color: #34d399;" oninput="state.newActionDraft.outputs[${idx}].name = this.value; updateActionTaskYamlPreview();">
+                                        </div>
+                                        <div style="flex: 1;">
+                                            <select class="form-input" style="font-size: 0.8rem;" onchange="state.newActionDraft.outputs[${idx}].type = this.value;">
+                                                <option value="string" ${out.type === 'string' ? 'selected' : ''}>string</option>
+                                                <option value="boolean" ${out.type === 'boolean' ? 'selected' : ''}>boolean</option>
+                                                <option value="number" ${out.type === 'number' ? 'selected' : ''}>number</option>
+                                            </select>
+                                        </div>
+                                        <div style="flex: 2;">
+                                            <input type="text" class="form-input" placeholder="Description of exported fact" value="${out.description || ''}" style="font-size: 0.8rem;" oninput="state.newActionDraft.outputs[${idx}].description = this.value;">
+                                        </div>
+                                        <button type="button" class="btn btn-secondary" style="color: #fca5a5; padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="removeDraftOutput(${idx})">✕</button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
+                            <button type="button" class="btn btn-secondary" onclick="switchActionCreatorTab('metadata')">← Back to Metadata</button>
+                            <button type="button" class="btn btn-primary" onclick="switchActionCreatorTab('task_builder')">
+                                Next: Task Definition Builder ➔
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- TAB 3: TASK DEFINITION BUILDER -->
+                    <div id="tabContent_task_builder" style="display: ${draft.currentTab === 'task_builder' ? 'block' : 'none'};">
+                        <div style="background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.82rem; color: #93c5fd;">
+                            💡 <strong>Ansible Task Generator:</strong> Chọn Module Ansible và điền tham số. Sử dụng nút <strong>{{ Bind Input }}</strong> để liên kết tham số của module với Input đã khai báo ở Tab 2. Task sinh ra là mã Ansible thật 100% không cần viết tay!
+                        </div>
+
+                        <!-- Step 1: Select Module -->
+                        <div style="margin-bottom: 1.25rem;">
+                            <label class="form-label" style="font-size: 0.85rem;">Step 1: Select Ansible Module</label>
+                            <select id="selectedModuleSelect" class="form-input" style="font-family: monospace; font-size: 0.875rem;" onchange="onActionModuleSelected(this.value)">
+                                ${schemas.map(s => `
+                                    <option value="${s.module}" ${s.module === draft.selectedModule ? 'selected' : ''}>
+                                        ${s.module} (${s.displayName})
+                                    </option>
+                                `).join('')}
                             </select>
                         </div>
-                        <div>
-                            <label class="form-label">Capability *</label>
-                            <input type="text" id="actionCapability" class="form-input" placeholder="e.g., HEALTH_CHECK">
-                        </div>
-                    </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
-                        <h4 style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 1rem;">AWX Integration</h4>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                            <div>
-                                <label class="form-label">Provider</label>
-                                <select id="actionProvider" class="form-input">
-                                    <option value="ansible">Ansible</option>
-                                    <option value="netconf">NETCONF</option>
-                                    <option value="nephio">Nephio</option>
-                                    <option value="opentofu">OpenTofu</option>
-                                </select>
+
+                        <!-- Module Warning if High Risk -->
+                        ${currentSchema && currentSchema.warning ? `
+                            <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.82rem; color: #fca5a5;">
+                                ⚠️ ${currentSchema.warning}
                             </div>
-                            <div>
-                                <label class="form-label">Job Template ID *</label>
-                                <input type="number" id="actionTemplateId" class="form-input" placeholder="e.g., 10" min="1">
-                            </div>
-                            <div>
-                                <label class="form-label">Est. Duration (s)</label>
-                                <input type="number" id="actionDuration" class="form-input" placeholder="300" value="300" min="1">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #374151;">
-                        <h4 style="font-size: 0.875rem; color: #9ca3af; margin-bottom: 1rem;">Risk & Compensation</h4>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                            <div>
-                                <label class="form-label">Default Risk</label>
-                                <select id="actionRisk" class="form-input">
-                                    <option value="LOW">LOW</option>
-                                    <option value="MEDIUM" selected>MEDIUM</option>
-                                    <option value="HIGH">HIGH</option>
-                                    <option value="CRITICAL">CRITICAL</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="form-label">Compensation</label>
-                                <select id="actionCompensation" class="form-input">
-                                    <option value="NOTIFY_ONCALL">NOTIFY_ONCALL (escalate)</option>
-                                </select>
+                        ` : ''}
+
+                        <!-- Step 2: Dynamic Form Fields based on Module Schema -->
+                        <div style="background: #111827; border: 1px solid #374151; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1.25rem;">
+                            <h4 style="font-size: 0.875rem; color: #f3f4f6; margin-bottom: 1rem; display: flex; justify-content: space-between;">
+                                <span>Step 2: Module Parameters (${currentSchema ? currentSchema.displayName : 'Custom'})</span>
+                                <span style="font-family: monospace; font-size: 0.75rem; color: #60a5fa;">${draft.selectedModule}</span>
+                            </h4>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                ${(currentSchema?.fields || []).map(f => {
+                                    const val = draft.moduleParams[f.name] !== undefined ? draft.moduleParams[f.name] : (f.default || '');
+                                    const availableInputs = draft.inputs.map(i => i.name);
+                                    return `
+                                        <div>
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                                <label class="form-label" style="margin: 0; font-size: 0.8rem;">
+                                                    ${f.label || f.name} ${f.required ? '<span style="color:#ef4444;">*</span>' : ''}
+                                                </label>
+                                                ${availableInputs.length > 0 ? `
+                                                    <select class="bind-var-btn" title="Bind variable from Tab 2 inputs" onchange="bindInputToModuleField('${f.name}', this.value); this.value='';">
+                                                        <option value="">{{ Bind Input }}</option>
+                                                        ${availableInputs.map(inpName => `<option value="{{ ${inpName} }}">{{ ${inpName} }}</option>`).join('')}
+                                                    </select>
+                                                ` : ''}
+                                            </div>
+                                            ${f.type === 'choice' ? `
+                                                <select class="form-input" id="mod_field_${f.name}" onchange="onActionModuleFieldChanged('${f.name}', this.value)">
+                                                    ${(f.choices || []).map(c => `<option value="${c}" ${val === c ? 'selected' : ''}>${c}</option>`).join('')}
+                                                </select>
+                                            ` : `
+                                                <input type="${f.type === 'number' ? 'number' : 'text'}" class="form-input" id="mod_field_${f.name}" value="${val}" placeholder="${f.placeholder || ''}" oninput="onActionModuleFieldChanged('${f.name}', this.value)">
+                                            `}
+                                            ${f.description ? `<div style="font-size: 0.7rem; color: #9ca3af; margin-top: 0.2rem;">${f.description}</div>` : ''}
+                                        </div>
+                                    `;
+                                }).join('')}
                             </div>
                         </div>
+
+                        <!-- Step 3: Register Output -->
+                        <div style="margin-bottom: 1.25rem;">
+                            <label class="form-label" style="font-size: 0.85rem;">Step 3: Register Result Fact (Output Binding)</label>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <input type="text" class="form-input" id="taskRegisterInput" placeholder="e.g., service_res or output_fact" value="${draft.taskRegister || ''}" style="font-family: monospace; font-size: 0.85rem;" oninput="state.newActionDraft.taskRegister = this.value; updateActionTaskYamlPreview();">
+                                ${draft.outputs.length > 0 ? `
+                                    <select class="form-input" style="width: auto; font-size: 0.8rem;" onchange="document.getElementById('taskRegisterInput').value = this.value; state.newActionDraft.taskRegister = this.value; updateActionTaskYamlPreview();">
+                                        <option value="">Bind Output...</option>
+                                        ${draft.outputs.map(o => `<option value="${o.name}">${o.name}</option>`).join('')}
+                                    </select>
+                                ` : ''}
+                            </div>
+                        </div>
+
+                        <!-- Step 4: Live Task YAML Preview -->
+                        <div style="margin-bottom: 1.5rem;">
+                            <label class="form-label" style="font-size: 0.85rem; display: flex; justify-content: space-between;">
+                                <span>Step 4: Live Generated Task YAML (Syntax Verified)</span>
+                                <span class="badge badge-success" style="font-size: 0.65rem;">Valid Ansible</span>
+                            </label>
+                            <pre id="actionTaskYamlPreview" class="code-block" style="background: #0d1117; color: #58a6ff; font-family: monospace; font-size: 0.82rem; padding: 1rem; border-radius: 0.375rem; border: 1px solid #30363d; max-height: 240px; overflow-y: auto; margin: 0;"></pre>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
+                            <button type="button" class="btn btn-secondary" onclick="switchActionCreatorTab('inputs_outputs')">← Back to Inputs</button>
+                            <button type="button" class="btn btn-primary" onclick="saveNewActionFromDraft()" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); font-weight: 600;">
+                                ✓ Save Action Primitive
+                            </button>
+                        </div>
                     </div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button class="btn btn-primary" onclick="createAction()">Create Action</button>
                 </div>
             </div>
         </div>
     `;
+
     document.getElementById('modalContainer').innerHTML = modal;
+    if (draft.currentTab === 'task_builder') {
+        updateActionTaskYamlPreview();
+    }
+}
+
+function switchActionCreatorTab(tab) {
+    if (state.newActionDraft) {
+        state.newActionDraft.currentTab = tab;
+        renderActionCreatorModal();
+    }
+}
+
+function addDraftInput() {
+    if (!state.newActionDraft) return;
+    const count = state.newActionDraft.inputs.length + 1;
+    state.newActionDraft.inputs.push({
+        name: `param_${count}`,
+        label: `Parameter ${count}`,
+        type: 'string',
+        default: '',
+        required: true,
+        validation: ''
+    });
+    renderActionCreatorModal();
+}
+
+function removeDraftInput(idx) {
+    if (!state.newActionDraft) return;
+    state.newActionDraft.inputs.splice(idx, 1);
+    renderActionCreatorModal();
+}
+
+function addDraftOutput() {
+    if (!state.newActionDraft) return;
+    const count = state.newActionDraft.outputs.length + 1;
+    state.newActionDraft.outputs.push({
+        name: `result_${count}`,
+        type: 'string',
+        description: `Exported result from step`
+    });
+    renderActionCreatorModal();
+}
+
+function removeDraftOutput(idx) {
+    if (!state.newActionDraft) return;
+    state.newActionDraft.outputs.splice(idx, 1);
+    renderActionCreatorModal();
+}
+
+function onActionModuleSelected(moduleName) {
+    if (!state.newActionDraft) return;
+    state.newActionDraft.selectedModule = moduleName;
+    const schemas = state.moduleSchemas || [];
+    const schema = schemas.find(s => s.module === moduleName);
+    state.newActionDraft.moduleParams = {};
+    if (schema && schema.fields) {
+        schema.fields.forEach(f => {
+            if (f.default !== undefined) {
+                state.newActionDraft.moduleParams[f.name] = f.default;
+            }
+        });
+    }
+    renderActionCreatorModal();
+}
+
+function onActionModuleFieldChanged(fieldName, val) {
+    if (!state.newActionDraft) return;
+    state.newActionDraft.moduleParams[fieldName] = val;
+    updateActionTaskYamlPreview();
+}
+
+function bindInputToModuleField(fieldName, inputVar) {
+    if (!state.newActionDraft || !inputVar) return;
+    state.newActionDraft.moduleParams[fieldName] = inputVar;
+    const inputEl = document.getElementById(`mod_field_${fieldName}`);
+    if (inputEl) inputEl.value = inputVar;
+    updateActionTaskYamlPreview();
+}
+
+function updateActionTaskYamlPreview() {
+    const el = document.getElementById('actionTaskYamlPreview');
+    if (!el || !state.newActionDraft) return;
+
+    const draft = state.newActionDraft;
+    const actionName = draft.name || draft.id || 'Custom Action';
+    const taskName = `${actionName}`;
+    const moduleName = draft.selectedModule || 'ansible.builtin.debug';
+    const params = draft.moduleParams || {};
+    const register = draft.taskRegister || '';
+
+    let yaml = `- name: "${taskName}"\n  ${moduleName}:\n`;
+    for (const [k, v] of Object.entries(params)) {
+        if (v !== '' && v !== null && v !== undefined) {
+            yaml += `    ${k}: ${typeof v === 'number' || typeof v === 'boolean' ? v : `"${v}"`}\n`;
+        }
+    }
+    if (register) {
+        yaml += `  register: ${register}\n`;
+    }
+
+    el.innerText = yaml;
+}
+
+async function saveNewActionFromDraft() {
+    const draft = state.newActionDraft;
+    if (!draft) return;
+
+    const id = (draft.id || '').trim();
+    const name = (draft.name || '').trim();
+    const domain = draft.domain || 'CNTT';
+    const capability = draft.capability || 'SERVICE_RESTART';
+    const risk = draft.riskDefault || 'LOW';
+
+    if (!id) {
+        alert('Action ID is required (UPPER_SNAKE_CASE)');
+        switchActionCreatorTab('metadata');
+        return;
+    }
+
+    if (!/^[A-Z][A-Z0-9_]+$/.test(id)) {
+        alert('Action ID must be in UPPER_SNAKE_CASE (e.g. NGINX_RESTART)');
+        switchActionCreatorTab('metadata');
+        return;
+    }
+
+    if (!name) {
+        alert('Action Name is required');
+        switchActionCreatorTab('metadata');
+        return;
+    }
+
+    // Build the runnable task template object
+    const taskObj = {
+        name: name,
+        module: draft.selectedModule || 'ansible.builtin.debug',
+        args: { ...draft.moduleParams }
+    };
+    if (draft.taskRegister) {
+        taskObj.register = draft.taskRegister;
+    }
+
+    const payload = {
+        id,
+        name,
+        domain,
+        capability,
+        description: draft.description || '',
+        inputs: draft.inputs || [],
+        outputs: draft.outputs || [],
+        task_template: [ taskObj ],
+        implementation: {
+            provider: 'ansible',
+            estimatedDurationSec: 60
+        },
+        verification: {
+            type: 'embedded',
+            note: 'Playbook self-verifies via Ansible module'
+        },
+        compensation: {
+            type: 'escalate',
+            action: 'NOTIFY_ONCALL'
+        },
+        riskDefault: risk
+    };
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/actions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            alert('Error creating action: ' + (err.error || res.statusText));
+            return;
+        }
+
+        const createdAction = await res.json();
+        state.actions.push(createdAction);
+        closeModal();
+        renderView('actions');
+        alert(`Action "${createdAction.id}" created successfully with runnable Ansible task!`);
+    } catch (e) {
+        alert('Failed to create action: ' + e.message);
+    }
 }
 
 function openEditActionModal(actionId) {
@@ -1183,11 +1639,16 @@ function openNewBlueprintModal() {
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button class="btn btn-primary" onclick="createBlueprint()" style="background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%);">
-                        ✓ Save & Publish Blueprint
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                    <button type="button" class="btn btn-secondary" onclick="openYamlPreviewModal()" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                        <span>📄</span> Preview Ansible YAML
                     </button>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        <button class="btn btn-primary" onclick="createBlueprint()" style="background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%);">
+                            ✓ Save & Publish Blueprint
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1195,11 +1656,214 @@ function openNewBlueprintModal() {
     document.getElementById('modalContainer').innerHTML = modal;
 }
 
-function openEditBlueprintModal(bpName) {
-    const bp = state.blueprints.find(b => b.metadata.name === bpName);
-    if (!bp) return;
+// ============================================================
+// MODAL — Blueprint Skeleton Viewer (Timeline + Clone-to-Change)
+// ============================================================
+async function openBlueprintDetailModal(bpName) {
+    let bp = state.blueprints.find(b => b.metadata.name === bpName);
+    if (!bp || !bp.spec || !bp.spec.steps) {
+        try {
+            const res = await fetch(`${state.backendUrl}/api/blueprints/${bpName}`);
+            if (res.ok) bp = await res.json();
+        } catch (err) {
+            console.error('Error fetching blueprint details:', err);
+        }
+    }
+    if (!bp) {
+        alert('Blueprint not found');
+        return;
+    }
 
-    state.composerSteps = bp.spec.steps.map(s => s.action);
+    if (state.actions.length === 0) {
+        try {
+            const actRes = await fetch(`${state.backendUrl}/api/actions`);
+            if (actRes.ok) state.actions = await actRes.json();
+        } catch (e) {}
+    }
+
+    const steps = bp.spec.steps || [];
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 860px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.65rem;">
+                        <span style="font-size: 1.6rem;">🧩</span>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 0.6rem;">
+                                <h2 class="modal-title" style="margin: 0; font-size: 1.25rem;">${bp.metadata.name}</h2>
+                                <span class="badge badge-info" style="font-size: 0.72rem;">v${bp.metadata.version}</span>
+                                <span class="badge badge-${bp.spec.status === 'PUBLISHED' ? 'success' : bp.spec.status === 'DRAFT' ? 'warning' : 'info'}" style="font-size: 0.72rem;">${bp.spec.status}</span>
+                            </div>
+                            <div style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.2rem;">
+                                Domain: <strong style="color: #cbd5e1;">${bp.spec.domain}</strong> · Owner: <strong style="color: #cbd5e1;">${bp.spec.owner}</strong>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+
+                <div class="modal-body" style="max-height: 72vh; overflow-y: auto; padding-right: 0.5rem;">
+                    <!-- Blueprint Skeleton Concept Banner -->
+                    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 0.5rem; padding: 0.85rem 1rem; margin-bottom: 1.25rem; display: flex; align-items: flex-start; gap: 0.75rem;">
+                        <span style="font-size: 1.3rem;">ℹ️</span>
+                        <div style="font-size: 0.82rem; color: #cbd5e1; line-height: 1.45;">
+                            <strong>Bản thiết kế khung (Blueprint Skeleton):</strong> Đây là khung xương quy trình đóng gói chuỗi các Action Primitive nguyên tử, <strong>không lưu cứng tham số máy chủ hay mật khẩu runtime</strong>. Nhấn <strong>🚀 Clone & Tạo Change</strong> để sinh ra bản Change thực thi và tùy biến cấu hình cho từng máy chủ mục tiêu.
+                        </div>
+                    </div>
+
+                    ${bp.spec.description ? `
+                        <div style="font-size: 0.875rem; color: #d1d5db; margin-bottom: 1.25rem; line-height: 1.5; background: #111827; padding: 0.75rem 1rem; border-radius: 0.375rem; border: 1px solid #1f2937;">
+                            ${bp.spec.description}
+                        </div>
+                    ` : ''}
+
+                    <div style="font-weight: 600; font-size: 0.92rem; color: #f3f4f6; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center;">
+                        <span>Sequential Skeleton Pipeline (${steps.length} Actions):</span>
+                        <span style="font-size: 0.75rem; color: #9ca3af; font-weight: normal;">Ordered Execution flow</span>
+                    </div>
+
+                    <!-- Steps List -->
+                    <div style="display: flex; flex-direction: column; gap: 1rem;">
+                        ${steps.map((stepItem, idx) => {
+                            const actionId = typeof stepItem === 'string' ? stepItem : stepItem.action;
+                            const stepInputs = (stepItem && stepItem.inputs) ? stepItem.inputs : {};
+                            const action = state.actions.find(a => a.id === actionId);
+                            const actName = action ? action.name : actionId;
+                            const capability = action ? action.capability : 'CUSTOM';
+                            const moduleName = action?.task_template?.[0]?.module 
+                                ? action.task_template[0].module.replace('ansible.builtin.', '')
+                                : (action?.implementation?.provider || 'ansible');
+                            const inputsList = action?.inputs || [];
+                            const outputsList = action?.outputs || [];
+
+                            // Data flow description text
+                            let dataFlowHint = '';
+                            if (idx === 0) {
+                                dataFlowHint = 'Khởi tạo và xuất facts nền tảng qua set_fact (output_action1) để các bước sau tái sử dụng.';
+                            } else if (idx === 1) {
+                                dataFlowHint = 'Kế thừa facts trạng thái từ Bước 1, thực hiện chu trình chuyển đổi và ghi nhận mốc thời gian/uptime.';
+                            } else {
+                                dataFlowHint = 'Đối chiếu trạng thái dịch vụ với kết quả từ Bước 1 & 2 để đưa ra kết luận PASS/FAIL (embedded assert).';
+                            }
+
+                            return `
+                                <div style="background: #111827; border: 1px solid #374151; border-radius: 0.5rem; padding: 1rem; transition: border-color 0.2s;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.6rem;">
+                                        <div style="display: flex; align-items: center; gap: 0.6rem;">
+                                            <span class="composer-step-number" style="background: #3b82f6; width: 26px; height: 26px; font-size: 0.8rem;">${idx + 1}</span>
+                                            <div>
+                                                <div style="font-weight: 600; color: #f9fafb; font-size: 0.95rem;">
+                                                    ${actName}
+                                                </div>
+                                                <div style="font-family: monospace; font-size: 0.75rem; color: #60a5fa;">
+                                                    ${actionId}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; gap: 0.4rem; align-items: center;">
+                                            <span class="badge" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; font-family: monospace; font-size: 0.72rem;">
+                                                module: ${moduleName}
+                                            </span>
+                                            <span class="badge badge-info" style="font-size: 0.7rem;">${capability}</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Data Flow Hint -->
+                                    <div style="font-size: 0.75rem; color: #94a3b8; background: #1e293b; padding: 0.4rem 0.65rem; border-radius: 0.25rem; margin-bottom: 0.75rem; border-left: 2px solid #38bdf8;">
+                                        <strong>Luồng dữ liệu:</strong> ${dataFlowHint}
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 0.85rem; font-size: 0.8rem;">
+                                        <!-- Inputs -->
+                                        <div style="background: #0f172a; padding: 0.6rem 0.75rem; border-radius: 0.375rem; border: 1px solid #1e293b;">
+                                            <strong style="color: #9ca3af; display: block; margin-bottom: 0.35rem; font-size: 0.75rem;">
+                                                📥 Khung tham số yêu cầu (Inputs Schema):
+                                            </strong>
+                                            ${inputsList.length > 0 ? inputsList.map(inp => `
+                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; padding-bottom: 0.25rem; border-bottom: 1px dashed #1e293b;">
+                                                    <span style="color: #cbd5e1; font-family: monospace;">${inp.name}</span>
+                                                    <span style="color: #94a3b8; font-size: 0.72rem;">${inp.type}${inp.required ? ' <span style="color:#f87171;">*</span>' : ''}</span>
+                                                </div>
+                                            `).join('') : `<span style="color: #6b7280; font-style: italic;">Không yêu cầu tham số đầu vào</span>`}
+                                            <div style="font-size: 0.68rem; color: #64748b; margin-top: 0.35rem; font-style: italic;">
+                                                * Giá trị cụ thể sẽ do Operator điền khi bấm "Clone & Tạo Change"
+                                            </div>
+                                        </div>
+
+                                        <!-- Outputs -->
+                                        <div style="background: #0f172a; padding: 0.6rem 0.75rem; border-radius: 0.375rem; border: 1px solid #1e293b;">
+                                            <strong style="color: #9ca3af; display: block; margin-bottom: 0.35rem; font-size: 0.75rem;">
+                                                📤 Facts đầu ra (Outputs):
+                                            </strong>
+                                            ${outputsList.length > 0 ? outputsList.map(out => `
+                                                <div style="margin-bottom: 0.25rem;">
+                                                    <span style="color: #34d399; font-family: monospace; font-size: 0.75rem;">${out.name}</span>
+                                                    <span style="color: #6b7280; font-size: 0.7rem;">(${out.type})</span>
+                                                    ${out.description ? `<div style="color: #94a3b8; font-size: 0.7rem;">${out.description}</div>` : ''}
+                                                </div>
+                                            `).join('') : `<span style="color: #6b7280; font-style: italic;">Không xuất facts</span>`}
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #374151;">
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button type="button" class="btn btn-secondary" onclick="openYamlPreviewModal('${bp.metadata.name}')" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                            <span>📄</span> View Ansible Playbook YAML
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="openEditBlueprintModal('${bp.metadata.name}')">
+                            ⚙ Edit Skeleton
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                        <button class="btn btn-primary" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); font-weight: 600; padding: 0.5rem 1.1rem; display: inline-flex; align-items: center; gap: 0.4rem;" onclick="closeModal(); openNewChangeModal('${bp.metadata.name}');">
+                            <span>🚀</span> Clone & Tạo Change
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+// ============================================================
+// MODAL — Blueprint Composer / Editor
+// ============================================================
+async function openEditBlueprintModal(bpName) {
+    let bp = state.blueprints.find(b => b.metadata.name === bpName);
+    if (!bp || !bp.spec || !bp.spec.steps) {
+        try {
+            const res = await fetch(`${state.backendUrl}/api/blueprints/${bpName}`);
+            if (res.ok) bp = await res.json();
+        } catch (err) {
+            console.error('Error fetching blueprint for editing:', err);
+        }
+    }
+    if (!bp) {
+        alert('Blueprint not found');
+        return;
+    }
+
+    if (state.actions.length === 0) {
+        try {
+            const actRes = await fetch(`${state.backendUrl}/api/actions`);
+            if (actRes.ok) state.actions = await actRes.json();
+        } catch (e) {}
+    }
+
+    state.composerSteps = (bp.spec.steps || []).map((s, idx) => ({
+        stepIndex: idx + 1,
+        action: typeof s === 'string' ? s : s.action,
+        inputs: (s && s.inputs) ? { ...s.inputs } : {}
+    }));
 
     const modal = `
         <div class="modal-overlay" onclick="closeModal(event)">
@@ -1208,8 +1872,8 @@ function openEditBlueprintModal(bpName) {
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <span style="font-size: 1.5rem;">⚙️</span>
                         <div>
-                            <h2 class="modal-title" style="margin: 0;">Edit Blueprint: ${bpName}</h2>
-                            <div style="font-size: 0.8rem; color: #9ca3af;">Update orchestration sequence or metadata</div>
+                            <h2 class="modal-title" style="margin: 0;">Edit Blueprint Skeleton: ${bpName}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Configure sequential action pipeline, individual inputs & execution parameters</div>
                         </div>
                     </div>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
@@ -1235,6 +1899,11 @@ function openEditBlueprintModal(bpName) {
                                 ${['CNTT', 'IP', '5G', 'Transport'].map(d => `<option value="${d}" ${bp.spec.domain === d ? 'selected' : ''}>${d}</option>`).join('')}
                             </select>
                         </div>
+                    </div>
+                    
+                    <div style="margin-top: 0.75rem; margin-bottom: 1rem;">
+                        <label class="form-label">Description</label>
+                        <input type="text" id="bpDescription" class="form-input" value="${bp.spec.description || ''}" placeholder="Mô tả quy trình...">
                     </div>
 
                     <!-- 2-Column Composer Layout -->
@@ -1289,11 +1958,17 @@ function openEditBlueprintModal(bpName) {
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" style="color: #fca5a5;" onclick="confirmDeleteBlueprint('${bpName}')">Delete</button>
-                    <div style="flex: 1;"></div>
-                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button class="btn btn-primary" onclick="saveBlueprint('${bpName}')">Save Changes</button>
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-secondary" style="color: #fca5a5;" onclick="confirmDeleteBlueprint('${bpName}')">Delete</button>
+                        <button type="button" class="btn btn-secondary" onclick="openYamlPreviewModal('${bpName}')" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                            <span>📄</span> Preview Ansible YAML
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        <button class="btn btn-primary" onclick="saveBlueprint('${bpName}')">Save Changes</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1304,7 +1979,10 @@ function openEditBlueprintModal(bpName) {
 
 // Composer helper functions
 function addComposerStep(actionId) {
-    state.composerSteps.push(actionId);
+    state.composerSteps.push({
+        stepIndex: state.composerSteps.length + 1,
+        action: actionId
+    });
     renderComposerStepsList();
 }
 
@@ -1339,28 +2017,314 @@ function renderComposerStepsList() {
         return;
     }
 
-    container.innerHTML = state.composerSteps.map((actionId, idx) => {
+    container.innerHTML = state.composerSteps.map((stepObj, idx) => {
+        const actionId = typeof stepObj === 'string' ? stepObj : stepObj.action;
         const action = state.actions.find(a => a.id === actionId);
         const name = action ? action.name : actionId;
         const domain = action ? action.domain : 'CNTT';
-        const awxId = action?.implementation?.awxJobTemplateId ? `#${action.implementation.awxJobTemplateId}` : '';
+        const moduleName = action?.task_template?.[0]?.module 
+            ? action.task_template[0].module.replace('ansible.builtin.', '')
+            : (action?.implementation?.provider || 'ansible');
+        const inputsList = (action?.inputs || []).map(i => i.name);
+        const outputsList = (action?.outputs || []).map(o => o.name);
+
         return `
-            <div class="composer-step-item">
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <span class="composer-step-number">${idx + 1}</span>
-                    <div>
-                        <div style="font-weight: 600; color: #f9fafb; font-size: 0.875rem;">${name}</div>
-                        <div style="font-size: 0.75rem; color: #9ca3af; font-family: monospace;">${actionId} · ${domain} ${awxId ? `· AWX ${awxId}` : ''}</div>
+            <div class="composer-step-item" style="border-left: 3px solid #3b82f6;">
+                <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex: 1;">
+                    <span class="composer-step-number" style="margin-top: 0.2rem;">${idx + 1}</span>
+                    <div style="flex: 1;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                            <div style="font-weight: 600; color: #f9fafb; font-size: 0.875rem;">${name}</div>
+                            <span class="badge badge-info" style="font-size: 0.65rem;">${domain}</span>
+                            <span class="badge" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; font-family: monospace; font-size: 0.68rem;">
+                                ${moduleName}
+                            </span>
+                        </div>
+                        <div style="font-size: 0.75rem; color: #60a5fa; font-family: monospace; margin-top: 0.15rem;">${actionId}</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.35rem; font-size: 0.72rem;">
+                            <span style="color: #9ca3af;">📥 Cần tham số: ${inputsList.length > 0 ? inputsList.map(inp => `<code style="color: #cbd5e1; background: #111827; padding: 0.1rem 0.3rem; border-radius: 0.2rem;">${inp}</code>`).join(' ') : '<em style="color:#6b7280;">Không</em>'}</span>
+                            <span style="color: #9ca3af;">📤 Xuất facts: ${outputsList.length > 0 ? outputsList.map(out => `<code style="color: #34d399; background: #111827; padding: 0.1rem 0.3rem; border-radius: 0.2rem;">${out}</code>`).join(' ') : '<em style="color:#6b7280;">Không</em>'}</span>
+                        </div>
                     </div>
                 </div>
-                <div class="composer-controls">
-                    <button type="button" class="composer-btn-ctrl" title="Move Up" onclick="moveComposerStep(${idx}, -1)" ${idx === 0 ? 'disabled style="opacity:0.3;"' : ''}>▲</button>
-                    <button type="button" class="composer-btn-ctrl" title="Move Down" onclick="moveComposerStep(${idx}, 1)" ${idx === state.composerSteps.length - 1 ? 'disabled style="opacity:0.3;"' : ''}>▼</button>
-                    <button type="button" class="composer-btn-ctrl danger" title="Remove Step" onclick="removeComposerStep(${idx})">✕</button>
+                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                    <div class="composer-controls">
+                        <button type="button" class="composer-btn-ctrl" title="Di chuyển lên" onclick="moveComposerStep(${idx}, -1)" ${idx === 0 ? 'disabled style="opacity:0.3;"' : ''}>▲</button>
+                        <button type="button" class="composer-btn-ctrl" title="Di chuyển xuống" onclick="moveComposerStep(${idx}, 1)" ${idx === state.composerSteps.length - 1 ? 'disabled style="opacity:0.3;"' : ''}>▼</button>
+                        <button type="button" class="composer-btn-ctrl danger" title="Xóa bước khỏi Skeleton" onclick="removeComposerStep(${idx})">✕</button>
+                    </div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+// ============================================================
+// MODAL: Configure Step Parameters (Per-Action Configuration with Anti-typo Validation)
+// ============================================================
+function openConfigureStepModal(stepIndex) {
+    const step = state.composerSteps[stepIndex];
+    if (!step) return;
+
+    const actionId = typeof step === 'string' ? step : step.action;
+    const action = state.actions.find(a => a.id === actionId);
+    if (!action) {
+        alert('Action definition not found');
+        return;
+    }
+
+    const currentInputs = (step && step.inputs) ? { ...step.inputs } : {};
+    // Ensure all defined inputs have a value
+    (action.inputs || []).forEach(inp => {
+        if (currentInputs[inp.name] === undefined && inp.default !== undefined) {
+            currentInputs[inp.name] = inp.default;
+        }
+    });
+
+    const subModal = `
+        <div class="modal-overlay" id="configureStepModalOverlay" style="z-index: 1100;">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 600px; width: 90%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.3rem;">⚙️</span>
+                        <div>
+                            <h3 class="modal-title" style="margin: 0; font-size: 1.1rem;">Step ${stepIndex + 1}: ${action.name}</h3>
+                            <div style="font-size: 0.75rem; color: #9ca3af;">Configure inputs & operational variables for this action</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeConfigureStepModal()">&times;</button>
+                </div>
+                <div class="modal-body" style="max-height: 60vh; overflow-y: auto;">
+                    ${(action.inputs && action.inputs.length > 0) ? action.inputs.map(inp => {
+                        const val = currentInputs[inp.name] !== undefined ? currentInputs[inp.name] : (inp.default || '');
+                        return `
+                            <div style="margin-bottom: 1.25rem;">
+                                <label class="form-label" style="display: flex; justify-content: space-between;">
+                                    <span>${inp.label || inp.name} ${inp.required ? '<span style="color:#ef4444;">*</span>' : ''}</span>
+                                    <span style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">{{ ${inp.name} }}</span>
+                                </label>
+                                <input 
+                                    type="${inp.type === 'number' ? 'number' : 'text'}" 
+                                    id="cfg_input_${inp.name}" 
+                                    class="form-input" 
+                                    value="${val}" 
+                                    placeholder="${inp.placeholder || ''}"
+                                    data-validation="${inp.validation || ''}"
+                                    data-required="${inp.required ? 'true' : 'false'}"
+                                    oninput="validateAntiTypoInput(this)"
+                                >
+                                ${inp.description ? `<div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.3rem;">${inp.description}</div>` : ''}
+                                <div id="cfg_err_${inp.name}" class="validation-error-text" style="display: none;"></div>
+                            </div>
+                        `;
+                    }).join('') : `
+                        <div style="text-align: center; color: #9ca3af; padding: 2rem;">
+                            No configurable input parameters defined for this action.
+                        </div>
+                    `}
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                    <button class="btn btn-secondary" onclick="closeConfigureStepModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveConfigureStepInputs(${stepIndex})">✓ Apply Inputs</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const div = document.createElement('div');
+    div.id = 'configureStepModalWrapper';
+    div.innerHTML = subModal;
+    document.body.appendChild(div);
+}
+
+function closeConfigureStepModal() {
+    const el = document.getElementById('configureStepModalWrapper');
+    if (el) el.remove();
+}
+
+function validateAntiTypoInput(inputEl) {
+    const val = inputEl.value.trim();
+    const pattern = inputEl.dataset.validation;
+    const isRequired = inputEl.dataset.required === 'true';
+    const errEl = document.getElementById(inputEl.id.replace('cfg_input_', 'cfg_err_'));
+
+    let errorMsg = '';
+    if (isRequired && !val) {
+        errorMsg = 'This parameter cannot be empty';
+    } else if (pattern && val) {
+        const regex = new RegExp(pattern);
+        if (!regex.test(val)) {
+            if (pattern.includes('https?')) {
+                errorMsg = 'Invalid URL format (must start with http:// or https://)';
+            } else if (pattern.includes('^[a-zA-Z0-9@._-]+$')) {
+                errorMsg = 'Invalid service name format (only letters, numbers, @, ., _, - allowed)';
+            } else if (pattern.includes('^[1-9]')) {
+                errorMsg = 'Must be a positive integer';
+            } else {
+                errorMsg = 'Value does not match required format';
+            }
+        }
+    }
+
+    if (errorMsg) {
+        inputEl.classList.add('input-invalid');
+        if (errEl) {
+            errEl.innerText = '⚠ ' + errorMsg;
+            errEl.style.display = 'block';
+        }
+        return false;
+    } else {
+        inputEl.classList.remove('input-invalid');
+        if (errEl) errEl.style.display = 'none';
+        return true;
+    }
+}
+
+function saveConfigureStepInputs(stepIndex) {
+    const step = state.composerSteps[stepIndex];
+    if (!step) return;
+
+    const actionId = typeof step === 'string' ? step : step.action;
+    const action = state.actions.find(a => a.id === actionId);
+    if (!action) return;
+
+    const newInputs = {};
+    let hasError = false;
+
+    (action.inputs || []).forEach(inp => {
+        const inputEl = document.getElementById(`cfg_input_${inp.name}`);
+        if (inputEl) {
+            const isValid = validateAntiTypoInput(inputEl);
+            if (!isValid) hasError = true;
+            newInputs[inp.name] = inp.type === 'number' ? Number(inputEl.value) : inputEl.value.trim();
+        }
+    });
+
+    if (hasError) {
+        alert('Please resolve input validation errors before applying.');
+        return;
+    }
+
+    if (typeof state.composerSteps[stepIndex] === 'string') {
+        state.composerSteps[stepIndex] = {
+            stepIndex: stepIndex + 1,
+            action: actionId,
+            inputs: newInputs
+        };
+    } else {
+        state.composerSteps[stepIndex].inputs = newInputs;
+    }
+
+    closeConfigureStepModal();
+    renderComposerStepsList();
+}
+
+// ============================================================
+// MODAL: YAML Playbook Preview & Export
+// ============================================================
+async function openYamlPreviewModal(bpName = null) {
+    let yamlContent = '';
+    let title = bpName ? `Playbook Preview: ${bpName}` : 'Generated Playbook Preview';
+
+    try {
+        if (bpName) {
+            const res = await fetch(`${state.backendUrl}/api/blueprints/${bpName}/yaml`);
+            if (res.ok) {
+                const data = await res.json();
+                yamlContent = data.yaml;
+            } else {
+                yamlContent = `# Error fetching YAML from backend: ${res.statusText}`;
+            }
+        } else {
+            // Build local representation for current composer state
+            const bpPayload = getBlueprintFormData();
+            if (!bpPayload) return;
+            // Generate YAML preview locally or via API
+            const res = await fetch(`${state.backendUrl}/api/blueprints/${bpPayload.name}/yaml`);
+            if (res.ok) {
+                const data = await res.json();
+                yamlContent = data.yaml;
+            } else {
+                // Synthesize representation
+                yamlContent = `# ========================================================\n# Dynamic Playbook: ${bpPayload.name}\n# Generated from ${bpPayload.steps.length} composed actions\n# ========================================================\n---\n`;
+                bpPayload.steps.forEach((s, idx) => {
+                    yamlContent += `\n# Action ${idx + 1}: ${s.action}\n- name: "Action ${idx + 1}: ${s.action}"\n  hosts: db_servers\n  vars:\n`;
+                    Object.entries(s.inputs || {}).forEach(([k, v]) => {
+                        yamlContent += `    ${k}: "${v}"\n`;
+                    });
+                });
+            }
+        }
+    } catch (e) {
+        yamlContent = `# Failed to generate YAML preview: ${e.message}`;
+    }
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 900px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.4rem;">📄</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">${title}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Ansible Playbook generated with per-action data flow (set_fact)</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal-body" style="padding-top: 0.5rem;">
+                    <div class="yaml-toolbar">
+                        <span style="font-size: 0.75rem; color: #9ca3af; font-family: monospace;">ansible-playbook format (.yml)</span>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" onclick="copyYamlToClipboard()">
+                                📋 Copy Playbook
+                            </button>
+                            <button class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" onclick="downloadYamlFile('${bpName || 'db_maintenance'}')">
+                                💾 Download .yml
+                            </button>
+                        </div>
+                    </div>
+                    <pre class="yaml-preview-modal" id="yamlContentPre">${escapeHtml(yamlContent)}</pre>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end;">
+                    <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+function copyYamlToClipboard() {
+    const el = document.getElementById('yamlContentPre');
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText).then(() => {
+        alert('Playbook YAML copied to clipboard!');
+    }).catch(err => {
+        alert('Copy failed: ' + err.message);
+    });
+}
+
+function downloadYamlFile(filename = 'playbook') {
+    const el = document.getElementById('yamlContentPre');
+    if (!el) return;
+    const blob = new Blob([el.innerText], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}.yml`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 function filterComposerActions(searchTerm = '') {
@@ -1389,6 +2353,41 @@ function filterComposerActions(searchTerm = '') {
     `).join('');
 }
 
+function getBlueprintFormData(currentName = null) {
+    const nameInput = document.getElementById('bpName');
+    const name = (currentName || (nameInput ? nameInput.value : '')).trim();
+    const version = (document.getElementById('bpVersion')?.value || '1.0.0').trim();
+    const owner = (document.getElementById('bpOwner')?.value || 'DevOps-Admin').trim();
+    const domain = document.getElementById('bpDomain')?.value || 'CNTT';
+    const description = (document.getElementById('bpDescription')?.value || '').trim();
+    const compensationOnFailure = document.getElementById('bpCompensation')?.value || 'NOTIFY_ONCALL';
+    const status = document.getElementById('bpStatus')?.value || 'PUBLISHED';
+
+    if (!name || !version || !owner) {
+        alert('Please fill in Blueprint name, version, and owner');
+        return null;
+    }
+
+    if (!state.composerSteps || state.composerSteps.length === 0) {
+        alert('Blueprint must contain at least 1 Action step. Click "+ Add Step" to add actions.');
+        return null;
+    }
+
+    return {
+        name,
+        version,
+        owner,
+        domain,
+        description,
+        steps: state.composerSteps.map((s, idx) => ({
+            stepIndex: idx + 1,
+            action: typeof s === 'string' ? s : s.action
+        })),
+        compensationOnFailure,
+        status
+    };
+}
+
 async function createBlueprint() {
     const payload = getBlueprintFormData();
     if (!payload) return;
@@ -1402,7 +2401,7 @@ async function createBlueprint() {
 
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + err.error);
+            alert('Error creating blueprint: ' + (err.error || (err.errors ? err.errors.join('; ') : res.statusText)));
             return;
         }
 
@@ -1410,13 +2409,14 @@ async function createBlueprint() {
         state.blueprints.push(bp);
         closeModal();
         renderView('blueprints');
+        alert(`Blueprint "${bp.metadata.name}" created successfully!`);
     } catch (error) {
         alert('Failed to create blueprint: ' + error.message);
     }
 }
 
 async function saveBlueprint(bpName) {
-    const payload = getBlueprintFormData();
+    const payload = getBlueprintFormData(bpName);
     if (!payload) return;
 
     try {
@@ -1428,17 +2428,22 @@ async function saveBlueprint(bpName) {
 
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + err.error);
+            alert('Error updating blueprint: ' + (err.error || (err.errors ? err.errors.join('; ') : res.statusText)));
             return;
         }
 
         const updated = await res.json();
-        const index = state.blueprints.findIndex(b => b.metadata.name === bpName);
-        if (index !== -1) state.blueprints[index] = updated;
+        const idx = state.blueprints.findIndex(b => b.metadata.name === bpName);
+        if (idx >= 0) {
+            state.blueprints[idx] = updated;
+        } else {
+            state.blueprints.push(updated);
+        }
         closeModal();
         renderView('blueprints');
-    } catch (error) {
-        alert('Failed to update blueprint: ' + error.message);
+        alert(`Blueprint "${bpName}" updated successfully!`);
+    } catch (e) {
+        alert('Failed to update blueprint: ' + e.message);
     }
 }
 
@@ -1452,104 +2457,265 @@ async function confirmDeleteBlueprint(bpName) {
 
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + err.error);
+            alert('Error deleting blueprint: ' + (err.error || res.statusText));
             return;
         }
 
         state.blueprints = state.blueprints.filter(b => b.metadata.name !== bpName);
         closeModal();
         renderView('blueprints');
+        alert(`Blueprint "${bpName}" deleted successfully.`);
     } catch (error) {
         alert('Failed to delete blueprint: ' + error.message);
     }
 }
 
-function getBlueprintFormData() {
-    const name = document.getElementById('bpName').value.trim();
-    const version = document.getElementById('bpVersion').value.trim();
-    const owner = document.getElementById('bpOwner').value.trim();
-    const domain = document.getElementById('bpDomain').value;
-    const compensation = document.getElementById('bpCompensation').value;
-    const status = document.getElementById('bpStatus').value;
-    
-    const steps = state.composerSteps;
-
-    if (!name || !version || !owner) {
-        alert('Please fill in all required fields (marked with *)');
-        return null;
-    }
-
-    if (!steps || steps.length === 0) {
-        alert('Please add at least one step to the Blueprint sequence pipeline!');
-        return null;
-    }
-
-    return {
-        name, version, owner, domain, steps,
-        compensationOnFailure: compensation,
-        status
-    };
-}
-
 // ============================================================
-// MODAL — New Change (with dropdown objective)
+// MODAL — New Change (Clone-to-Change with Per-Action Parameter Overrides)
 // ============================================================
-function openNewChangeModal() {
+function openNewChangeModal(selectedObjective = null) {
     if (state.actions.length === 0) {
         alert('No actions in catalog. Create an Action first.');
         return;
     }
 
+    // Default objective: prioritize selectedObjective, then first blueprint, then first action
+    const defaultObj = selectedObjective || (state.blueprints.length > 0 ? state.blueprints[0].metadata.name : (state.actions[0]?.id || ''));
+    initChangeStepOverrides(defaultObj);
+
+    const isClonedFromBp = state.blueprints.some(b => b.metadata.name === defaultObj);
+
     const modal = `
         <div class="modal-overlay" onclick="closeModal(event)">
-            <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 680px; width: 95%;">
                 <div class="modal-header">
-                    <h2 class="modal-title">New Change Request</h2>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.4rem;">🚀</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">${isClonedFromBp ? `Clone Blueprint & Create Change` : `New Change Request`}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Configure operational parameters, target hosts & credentials for execution</div>
+                        </div>
+                    </div>
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
                 <div class="modal-body">
+                    ${isClonedFromBp ? `
+                        <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.65rem;">
+                            <span style="font-size: 1.25rem;">📋</span>
+                            <div style="font-size: 0.8rem; color: #6ee7b7; line-height: 1.4;">
+                                <strong>Cloned from Skeleton:</strong> Khung quy trình <code>${defaultObj}</code> đã được nạp sẵn. Hãy kiểm tra các tham số từng bước bên dưới và tùy biến giá trị cho lần chạy này.
+                            </div>
+                        </div>
+                    ` : ''}
+
                     <div style="margin-bottom: 1rem;">
                         <label class="form-label">Objective (Automation Unit) *</label>
-                        <select id="objectiveInput" class="form-input">
+                        <select id="objectiveInput" class="form-input" onchange="onChangeObjectiveSelected(this.value)">
                             ${state.blueprints.length > 0 ? `
                                 <optgroup label="📋 Blueprints (Multi-step Workflows)">
-                                    ${state.blueprints.map(b => `<option value="${b.metadata.name}">[Blueprint] ${b.metadata.name} (${b.spec.steps.length} steps)</option>`).join('')}
+                                    ${state.blueprints.map(b => `<option value="${b.metadata.name}" ${b.metadata.name === defaultObj ? 'selected' : ''}>[Blueprint] ${b.metadata.name} (${(b.spec.steps || []).length} actions)</option>`).join('')}
                                 </optgroup>
                             ` : ''}
                             <optgroup label="⚡ Action Primitives (Single Step)">
-                                ${state.actions.map(a => `<option value="${a.id}">[Action] ${a.name} (${a.id})</option>`).join('')}
+                                ${state.actions.map(a => `<option value="${a.id}" ${a.id === defaultObj ? 'selected' : ''}>[Action] ${a.name} (${a.id})</option>`).join('')}
                             </optgroup>
                         </select>
-                        <div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem;">Select either a composed Blueprint workflow or an atomic Action primitive</div>
+                        <div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem;">Select a composed Blueprint workflow or single Action primitive</div>
                     </div>
-                    <div style="margin-bottom: 1rem;">
-                        <label class="form-label">Target Hosts *</label>
-                        <input type="text" id="targetInput" class="form-input" placeholder="e.g., db_servers" value="db_servers">
+
+                    <!-- Step Overrides Preview Container -->
+                    <div id="changeStepsPreviewContainer" style="margin-bottom: 1.25rem;">
+                        ${renderChangeStepsOverrideList()}
                     </div>
-                    <div style="margin-bottom: 1rem;">
-                        <label class="form-label">Domain</label>
-                        <select id="domainInput" class="form-input">
-                            <option value="CNTT">CNTT</option>
-                            <option value="IP">IP / Backbone</option>
-                            <option value="5G">5G Core</option>
-                            <option value="Transport">Transport</option>
-                        </select>
+
+                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label class="form-label">Target Hosts *</label>
+                            <input type="text" id="targetInput" class="form-input" placeholder="e.g., db01, db_servers" value="db01">
+                            <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Ansible target host or inventory group (e.g. db01)</div>
+                        </div>
+                        <div>
+                            <label class="form-label">Domain</label>
+                            <select id="domainInput" class="form-input">
+                                <option value="CNTT">CNTT</option>
+                                <option value="IP">IP / Backbone</option>
+                                <option value="5G">5G Core</option>
+                                <option value="Transport">Transport</option>
+                            </select>
+                        </div>
                     </div>
+
                     <div style="margin-bottom: 1rem;">
                         <label style="display: flex; align-items: center; gap: 0.5rem; color: #d1d5db;">
                             <input type="checkbox" id="maintenanceWindowInput" style="width: auto;">
-                            <span>Maintenance Window</span>
+                            <span>Maintenance Window Approved</span>
                         </label>
                     </div>
                 </div>
-                <div class="modal-footer">
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
                     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button class="btn btn-primary" onclick="createChange()">Create Change</button>
+                    <button class="btn btn-primary" onclick="createChange()">Create Change & Assess Risk</button>
                 </div>
             </div>
         </div>
     `;
     document.getElementById('modalContainer').innerHTML = modal;
+}
+
+function initChangeStepOverrides(objectiveName) {
+    state.changeStepOverrides = [];
+    const bp = state.blueprints.find(b => b.metadata.name === objectiveName);
+    if (bp && bp.spec && bp.spec.steps) {
+        state.changeStepOverrides = bp.spec.steps.map((s, idx) => {
+            const actId = typeof s === 'string' ? s : s.action;
+            const act = state.actions.find(a => a.id === actId);
+            const defaultInputs = {};
+            if (act && act.inputs) {
+                act.inputs.forEach(inp => {
+                    if (inp.default !== undefined) defaultInputs[inp.name] = inp.default;
+                });
+            }
+            return {
+                stepIndex: idx + 1,
+                action: actId,
+                inputs: { ...defaultInputs, ...(s.inputs || {}) }
+            };
+        });
+    }
+}
+
+function onChangeObjectiveSelected(val) {
+    initChangeStepOverrides(val);
+    const container = document.getElementById('changeStepsPreviewContainer');
+    if (container) {
+        container.innerHTML = renderChangeStepsOverrideList();
+    }
+}
+
+function renderChangeStepsOverrideList() {
+    if (!state.changeStepOverrides || state.changeStepOverrides.length === 0) return '';
+
+    return `
+        <div style="background: #111827; border: 1px solid #374151; border-radius: 0.5rem; padding: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                <span style="font-size: 0.82rem; font-weight: 600; color: #f3f4f6;">Action Sequence & Input Parameters:</span>
+                <span class="badge badge-info" style="font-size: 0.7rem;">${state.changeStepOverrides.length} actions</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                ${state.changeStepOverrides.map((s, idx) => {
+                    const act = state.actions.find(a => a.id === s.action);
+                    const actName = act ? act.name : s.action;
+                    const inputs = s.inputs || {};
+                    const tagsHtml = Object.entries(inputs).map(([k, v]) => `
+                        <span class="step-input-tag"><strong>${k}:</strong> ${v}</span>
+                    `).join('');
+
+                    return `
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: #1f2937; padding: 0.5rem 0.75rem; border-radius: 0.375rem; border: 1px solid #374151;">
+                            <div style="flex: 1;">
+                                <div style="font-size: 0.82rem; font-weight: 600; color: #f9fafb;">${idx + 1}. ${actName}</div>
+                                <div style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">${s.action}</div>
+                                ${tagsHtml ? `<div class="step-inputs-summary">${tagsHtml}</div>` : ''}
+                            </div>
+                            <button type="button" class="composer-step-cfg-btn" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="openConfigureChangeStepModal(${idx})">
+                                ⚙ Override
+                            </button>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function openConfigureChangeStepModal(stepIdx) {
+    const step = state.changeStepOverrides[stepIdx];
+    if (!step) return;
+
+    const action = state.actions.find(a => a.id === step.action);
+    if (!action) return;
+
+    const currentInputs = { ...(step.inputs || {}) };
+    (action.inputs || []).forEach(inp => {
+        if (currentInputs[inp.name] === undefined && inp.default !== undefined) {
+            currentInputs[inp.name] = inp.default;
+        }
+    });
+
+    const subModal = `
+        <div class="modal-overlay" id="changeStepOverrideOverlay" style="z-index: 1200;">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 580px; width: 90%;">
+                <div class="modal-header">
+                    <div>
+                        <h3 class="modal-title" style="margin: 0; font-size: 1.05rem;">Override Parameters: Action ${stepIdx + 1}</h3>
+                        <div style="font-size: 0.75rem; color: #9ca3af;">${action.name} (${step.action})</div>
+                    </div>
+                    <button class="modal-close" onclick="closeConfigureChangeStepModal()">&times;</button>
+                </div>
+                <div class="modal-body" style="max-height: 55vh; overflow-y: auto;">
+                    ${(action.inputs || []).map(inp => {
+                        const val = currentInputs[inp.name] !== undefined ? currentInputs[inp.name] : (inp.default || '');
+                        return `
+                            <div style="margin-bottom: 1rem;">
+                                <label class="form-label" style="display: flex; justify-content: space-between;">
+                                    <span>${inp.label || inp.name}</span>
+                                    <span style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">{{ ${inp.name} }}</span>
+                                </label>
+                                <input 
+                                    type="${inp.type === 'number' ? 'number' : 'text'}" 
+                                    id="chg_cfg_${inp.name}" 
+                                    class="form-input" 
+                                    value="${val}" 
+                                    placeholder="${inp.placeholder || ''}"
+                                    data-validation="${inp.validation || ''}"
+                                    oninput="validateAntiTypoInput(this)"
+                                >
+                                ${inp.description ? `<div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.25rem;">${inp.description}</div>` : ''}
+                                <div id="cfg_err_${inp.name}" class="validation-error-text" style="display: none;"></div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                    <button class="btn btn-secondary" onclick="closeConfigureChangeStepModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveConfigureChangeStepInputs(${stepIdx})">✓ Save Override</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const div = document.createElement('div');
+    div.id = 'changeStepOverrideWrapper';
+    div.innerHTML = subModal;
+    document.body.appendChild(div);
+}
+
+function closeConfigureChangeStepModal() {
+    const el = document.getElementById('changeStepOverrideWrapper');
+    if (el) el.remove();
+}
+
+function saveConfigureChangeStepInputs(stepIdx) {
+    const step = state.changeStepOverrides[stepIdx];
+    if (!step) return;
+
+    const action = state.actions.find(a => a.id === step.action);
+    if (!action) return;
+
+    const newInputs = {};
+    (action.inputs || []).forEach(inp => {
+        const inputEl = document.getElementById(`chg_cfg_${inp.name}`);
+        if (inputEl) {
+            newInputs[inp.name] = inp.type === 'number' ? Number(inputEl.value) : inputEl.value.trim();
+        }
+    });
+
+    state.changeStepOverrides[stepIdx].inputs = newInputs;
+    closeConfigureChangeStepModal();
+    const container = document.getElementById('changeStepsPreviewContainer');
+    if (container) {
+        container.innerHTML = renderChangeStepsOverrideList();
+    }
 }
 
 // ============================================================
@@ -1682,7 +2848,8 @@ async function createChange() {
                 objective, 
                 target, 
                 domain,
-                constraints: { maintenanceWindow }
+                constraints: { maintenanceWindow },
+                stepOverrides: state.changeStepOverrides || []
             })
         });
         
@@ -1849,25 +3016,18 @@ async function runExecution(changeId) {
                 state.currentExecution = status;
                 updatePipelineStepsDOM(status);
 
-                // Check active step changes
-                if (status.currentStepIndex !== lastReportedStep && status.steps && status.steps[status.currentStepIndex]) {
-                    const currentStep = status.steps[status.currentStepIndex];
-                    if (currentStep.status === 'RUNNING') {
-                        state.executionLog.push(`[ORCHESTRATOR] ⟳ Step ${status.currentStepIndex + 1}/${status.steps.length}: Running ${currentStep.actionId}${currentStep.awxJobId ? ` (AWX Job #${currentStep.awxJobId})` : ''}...`);
-                        lastReportedStep = status.currentStepIndex;
-                        updateExecutionLog();
-                    }
-                }
-
-                // Check for step completion in log
-                if (status.steps) {
-                    status.steps.forEach((s, idx) => {
-                        if (s.status === 'SUCCESS' && !loggedSteps.has(idx)) {
-                            loggedSteps.add(idx);
-                            state.executionLog.push(`[ORCHESTRATOR] ✓ Step ${idx + 1}/${status.steps.length}: ${s.actionId} Completed successfully.`);
+                // Fetch real-time Ansible playbook execution log
+                try {
+                    const logRes = await fetch(`${state.backendUrl}/api/executions/${execution.executionId}/log`);
+                    if (logRes.ok) {
+                        const rawLog = await logRes.text();
+                        if (rawLog && rawLog.trim()) {
+                            state.executionLog = rawLog.split('\n');
                             updateExecutionLog();
                         }
-                    });
+                    }
+                } catch (logErr) {
+                    // ignore log fetch glitch
                 }
 
                 if (status.finished) {
@@ -1914,319 +3074,9 @@ function updateExecutionLog() {
     }
 }
 
-// ===========================
-// ACTION BUILDER FROM TEMPLATE
-// ===========================
-
-async function openActionBuilderModal() {
-    try {
-        // Load templates from backend
-        const response = await fetch(`${state.backendUrl}/api/templates`);
-        if (!response.ok) {
-            throw new Error('Failed to load templates');
-        }
-        const templates = await response.json();
-        
-        const modalHtml = `
-            <div class="modal-overlay" onclick="closeModal(event)">
-            <div class="modal" style="max-width: 900px;" onclick="event.stopPropagation()">
-                <div class="modal-header">
-                    <h2 class="modal-title">Create Action from Template</h2>
-                    <button class="modal-close" onclick="closeModal()">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <!-- Step 1: Template Selector -->
-                    <div id="templateSelectorStep">
-                        <h3 style="margin-bottom: 1rem;">Select Template</h3>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1rem;">
-                            ${templates.map(tpl => `
-                                <div class="template-card" onclick="selectTemplate('${tpl.id}')" style="cursor: pointer; padding: 1.5rem; background: #1f2937; border: 2px solid #374151; border-radius: 0.5rem; transition: all 0.2s;">
-                                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">${tpl.icon}</div>
-                                    <h4 style="margin-bottom: 0.5rem; color: #f9fafb;">${tpl.name}</h4>
-                                    <div style="font-size: 0.75rem; color: #9ca3af; margin-bottom: 0.5rem;">${tpl.category}</div>
-                                    <div style="font-size: 0.875rem; color: #d1d5db; line-height: 1.4;">${tpl.description}</div>
-                                    <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #374151; font-size: 0.75rem; color: #9ca3af;">
-                                        <div>⏱ ${tpl.estimatedDuration}</div>
-                                        <div style="margin-top: 0.25rem;">🔧 ${tpl.implementation.join(', ')}</div>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                    
-                    <!-- Step 2: Parameter Form (hidden initially) -->
-                    <div id="parameterFormStep" style="display: none;">
-                        <button onclick="backToTemplateSelector()" style="margin-bottom: 1rem; padding: 0.5rem 1rem; background: #374151; border: none; color: white; border-radius: 0.375rem; cursor: pointer;">← Back to Templates</button>
-                        <h3 style="margin-bottom: 1rem;">Configure Action</h3>
-                        <div id="selectedTemplateInfo" style="padding: 1rem; background: #1f2937; border-radius: 0.5rem; margin-bottom: 1.5rem;"></div>
-                        <form id="actionBuilderForm" onsubmit="event.preventDefault(); previewActionYAML();">
-                            <!-- Action Metadata (Domain & Risk) -->
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid #374151;">
-                                <div class="form-group">
-                                    <label class="form-label" style="display: block; margin-bottom: 0.5rem; color: #9ca3af; font-size: 0.875rem;">Domain *</label>
-                                    <select id="actionDomain" class="form-input" style="width: 100%;" required>
-                                        <option value="CNTT">CNTT</option>
-                                        <option value="IP">IP</option>
-                                        <option value="5G">5G</option>
-                                        <option value="Transport">Transport</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label" style="display: block; margin-bottom: 0.5rem; color: #9ca3af; font-size: 0.875rem;">Risk Default *</label>
-                                    <select id="actionRisk" class="form-input" style="width: 100%;" required>
-                                        <option value="LOW">LOW</option>
-                                        <option value="MEDIUM" selected>MEDIUM</option>
-                                        <option value="HIGH">HIGH</option>
-                                        <option value="CRITICAL">CRITICAL</option>
-                                    </select>
-                                </div>
-                            </div>
-                            
-                            <!-- Dynamic Template Parameters -->
-                            <h4 style="margin-bottom: 1rem; color: #f3f4f6;">Template Parameters</h4>
-                            <div id="dynamicParamsContainer"></div>
-                            
-                            <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
-                                <button type="button" onclick="previewActionYAML()" class="btn btn-secondary">Preview YAML</button>
-                                <button type="submit" class="btn btn-primary">Create Action</button>
-                            </div>
-                        </form>
-                    </div>
-                    
-                    <!-- Step 3: YAML Preview (hidden initially) -->
-                    <div id="yamlPreviewStep" style="display: none;">
-                        <button onclick="backToParameterForm()" style="margin-bottom: 1rem; padding: 0.5rem 1rem; background: #374151; border: none; color: white; border-radius: 0.375rem; cursor: pointer;">← Back to Edit</button>
-                        <h3 style="margin-bottom: 1rem;">YAML Preview</h3>
-                        <div id="yamlPreviewNote" style="display: none; background: #3730a3; color: #e0e7ff; padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-size: 0.875rem;"></div>
-                        <div style="background: #1f2937; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
-                            <div style="color: #9ca3af; font-size: 0.875rem; margin-bottom: 0.5rem;">Playbook gốc (Jinja2, chưa render):</div>
-                            <pre id="yamlPreviewCode" class="code-block" style="max-height: 400px; overflow-y: auto; margin: 0;"></pre>
-                        </div>
-                        <div style="display: flex; gap: 1rem;">
-                            <button onclick="backToParameterForm()" class="btn btn-secondary">← Edit Parameters</button>
-                            <button onclick="createActionFromTemplate()" class="btn btn-primary">✓ Confirm & Create Action</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            </div>
-        `;
-        
-        document.getElementById('modalContainer').innerHTML = modalHtml;
-        
-        // Add hover effects to template cards
-        setTimeout(() => {
-            document.querySelectorAll('.template-card').forEach(card => {
-                card.addEventListener('mouseenter', function() {
-                    this.style.borderColor = '#60a5fa';
-                    this.style.transform = 'translateY(-4px)';
-                    this.style.boxShadow = '0 10px 20px rgba(0,0,0,0.3)';
-                });
-                card.addEventListener('mouseleave', function() {
-                    this.style.borderColor = '#374151';
-                    this.style.transform = 'translateY(0)';
-                    this.style.boxShadow = 'none';
-                });
-            });
-        }, 100);
-        
-    } catch (error) {
-        alert('Failed to load templates: ' + error.message);
-    }
-}
-
-let selectedTemplateData = null;
-
-async function selectTemplate(templateId) {
-    try {
-        // Load template details
-        const response = await fetch(`${state.backendUrl}/api/templates/${templateId}`);
-        if (!response.ok) {
-            throw new Error('Failed to load template details');
-        }
-        selectedTemplateData = await response.json();
-        
-        // Hide template selector, show parameter form
-        document.getElementById('templateSelectorStep').style.display = 'none';
-        document.getElementById('parameterFormStep').style.display = 'block';
-        
-        // Show template info
-        document.getElementById('selectedTemplateInfo').innerHTML = `
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <div style="font-size: 2.5rem;">${selectedTemplateData.icon}</div>
-                <div>
-                    <h4 style="margin-bottom: 0.25rem; color: #f9fafb;">${selectedTemplateData.name}</h4>
-                    <div style="font-size: 0.875rem; color: #9ca3af;">${selectedTemplateData.description}</div>
-                </div>
-            </div>
-        `;
-        
-        // Generate dynamic form fields
-        const paramsHtml = selectedTemplateData.parameters.map(param => {
-            return generateFormField(param);
-        }).join('');
-        
-        document.getElementById('dynamicParamsContainer').innerHTML = paramsHtml;
-        
-    } catch (error) {
-        alert('Failed to load template: ' + error.message);
-    }
-}
-
-function generateFormField(param) {
-    const required = param.required ? '*' : '';
-    const description = param.description ? `<div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem;">${param.description}</div>` : '';
-    
-    let inputHtml = '';
-    
-    switch (param.type) {
-        case 'string':
-            inputHtml = `<input type="text" id="param_${param.name}" name="${param.name}" placeholder="${param.placeholder || ''}" ${param.required ? 'required' : ''} style="width: 100%; padding: 0.5rem; background: #374151; border: 1px solid #4b5563; color: white; border-radius: 0.375rem;">`;
-            break;
-        case 'number':
-            inputHtml = `<input type="number" id="param_${param.name}" name="${param.name}" placeholder="${param.placeholder || ''}" value="${param.default !== undefined ? param.default : ''}" ${param.required ? 'required' : ''} style="width: 100%; padding: 0.5rem; background: #374151; border: 1px solid #4b5563; color: white; border-radius: 0.375rem;">`;
-            break;
-        case 'boolean':
-            const checked = param.default ? 'checked' : '';
-            inputHtml = `
-                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                    <input type="checkbox" id="param_${param.name}" name="${param.name}" ${checked} style="width: 20px; height: 20px;">
-                    <span style="color: #d1d5db;">Enable</span>
-                </label>
-            `;
-            break;
-        case 'textarea':
-            inputHtml = `<textarea id="param_${param.name}" name="${param.name}" placeholder="${param.placeholder || ''}" ${param.required ? 'required' : ''} rows="4" style="width: 100%; padding: 0.5rem; background: #374151; border: 1px solid #4b5563; color: white; border-radius: 0.375rem; font-family: monospace;"></textarea>`;
-            break;
-        case 'select':
-            const options = param.options.map(opt => 
-                `<option value="${opt.value}" ${param.default === opt.value ? 'selected' : ''}>${opt.label}</option>`
-            ).join('');
-            inputHtml = `<select id="param_${param.name}" name="${param.name}" ${param.required ? 'required' : ''} style="width: 100%; padding: 0.5rem; background: #374151; border: 1px solid #4b5563; color: white; border-radius: 0.375rem;">${options}</select>`;
-            break;
-        default:
-            inputHtml = `<input type="text" id="param_${param.name}" name="${param.name}" placeholder="${param.placeholder || ''}" ${param.required ? 'required' : ''} style="width: 100%; padding: 0.5rem; background: #374151; border: 1px solid #4b5563; color: white; border-radius: 0.375rem;">`;
-    }
-    
-    return `
-        <div style="margin-bottom: 1.5rem;">
-            <label style="display: block; margin-bottom: 0.5rem; color: #f9fafb; font-weight: 500;">
-                ${param.label} ${required ? '<span style="color: #ef4444;">*</span>' : ''}
-            </label>
-            ${inputHtml}
-            ${description}
-        </div>
-    `;
-}
-
-function getFormParameters() {
-    const params = {};
-    
-    selectedTemplateData.parameters.forEach(param => {
-        const element = document.getElementById(`param_${param.name}`);
-        
-        if (param.type === 'boolean') {
-            params[param.name] = element.checked;
-        } else if (param.type === 'number') {
-            const value = element.value;
-            params[param.name] = value ? Number(value) : undefined;
-        } else {
-            const value = element.value.trim();
-            params[param.name] = value || undefined;
-        }
-    });
-    
-    return params;
-}
-
-async function previewActionYAML() {
-    try {
-        const params = getFormParameters();
-        
-        // Call preview API
-        const response = await fetch(`${state.backendUrl}/api/templates/${selectedTemplateData.id}/preview`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(params)
-        });
-        
-        const result = await response.json();
-        
-        if (!result.valid) {
-            alert('Validation errors:\n' + result.errors.join('\n'));
-            return;
-        }
-        
-        // Show YAML preview
-        document.getElementById('parameterFormStep').style.display = 'none';
-        document.getElementById('yamlPreviewStep').style.display = 'block';
-        document.getElementById('yamlPreviewCode').textContent = result.yaml;
-
-        const noteEl = document.getElementById('yamlPreviewNote');
-        if (result.note) {
-            noteEl.textContent = 'ℹ️ ' + result.note;
-            noteEl.style.display = 'block';
-        } else {
-            noteEl.style.display = 'none';
-        }
-        
-    } catch (error) {
-        alert('Failed to preview YAML: ' + error.message);
-    }
-}
-
-async function createActionFromTemplate() {
-    try {
-        const params = getFormParameters();
-        
-        // Get metadata values
-        const domain = document.getElementById('actionDomain')?.value || 'CNTT';
-        const riskDefault = document.getElementById('actionRisk')?.value || 'MEDIUM';
-        
-        // Call create action API
-        const response = await fetch(`${state.backendUrl}/api/actions/from-template`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                templateId: selectedTemplateData.id,
-                params: params,
-                domain: domain,
-                riskDefault: riskDefault
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (!response.ok) {
-            alert('Error: ' + (result.error || 'Failed to create action'));
-            return;
-        }
-        
-        alert(`Action "${result.action.id}" created successfully!`);
-        
-        // Reload actions
-        await loadActionsFromBackend();
-        
-        // Close modal and refresh view
-        closeModal();
-        renderView('actions');
-        
-    } catch (error) {
-        alert('Failed to create action: ' + error.message);
-    }
-}
-
-function backToTemplateSelector() {
-    document.getElementById('parameterFormStep').style.display = 'none';
-    document.getElementById('templateSelectorStep').style.display = 'block';
-    selectedTemplateData = null;
-}
-
-function backToParameterForm() {
-    document.getElementById('yamlPreviewStep').style.display = 'none';
-    document.getElementById('parameterFormStep').style.display = 'block';
-}
-
+// ============================================================
+// HELPER: Reload Actions
+// ============================================================
 async function loadActionsFromBackend() {
     try {
         const response = await fetch(`${state.backendUrl}/api/actions`);
@@ -2237,3 +3087,4 @@ async function loadActionsFromBackend() {
         console.error('Failed to load actions:', error);
     }
 }
+

@@ -5,4 +5,4 @@ Write-Host ""
 Write-Host "Note: Port 5500 is used because 8080 is reserved for AWX" -ForegroundColor Yellow
 Write-Host ""
 
-python -m http.server 5500
+npx --yes serve -l 5500 -s .
