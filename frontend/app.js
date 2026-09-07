@@ -3052,7 +3052,20 @@ async function runExecution(changeId) {
                     }
                     
                     updateExecutionLog();
-                    renderView('executions');
+                    // Update header badge & buttons in-place (avoid full re-render which would "jump" the page)
+                    const headerActions = document.querySelector('.view-header > div');
+                    if (headerActions && change) {
+                        const isSuccess = status.status === 'completed' || status.status === 'successful';
+                        headerActions.innerHTML = `
+                            <span class="badge badge-${isSuccess ? 'success' : 'danger'}" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+                                ${isSuccess ? '✓ Completed &amp; Verified' : '✕ Execution Failed'}
+                            </span>
+                            <button class="btn btn-secondary" onclick="runExecution('${changeId}')" style="border: 1px solid #4b5563;" title="Re-run this orchestration workflow">
+                                ↻ Re-run Pipeline
+                            </button>
+                            <button class="btn btn-secondary" onclick="renderView('changes')">← Back to Changes</button>
+                        `;
+                    }
                 }
             } catch (error) {
                 console.error('Poll error:', error);

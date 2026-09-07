@@ -288,6 +288,164 @@
         "action": "NOTIFY_ONCALL"
       },
       "riskDefault": "LOW"
+    },
+    {
+      "id": "DISK_SPACE_CHECK",
+      "name": "Check Disk Space on DB Server",
+      "domain": "CNTT",
+      "capability": "HEALTH_CHECK",
+      "description": "Kiểm tra dung lượng ổ đĩa còn trống trên server database. Chỉ đọc dữ liệu, không có bất kỳ thay đổi nào.\n",
+      "inputs": [
+        {
+          "name": "target_path",
+          "label": "Target Path to Check",
+          "type": "string",
+          "default": "/",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$"
+        },
+        {
+          "name": "warn_threshold_pct",
+          "label": "Warning Threshold (%)",
+          "type": "string",
+          "default": "80",
+          "required": true,
+          "validation": ""
+        }
+      ],
+      "outputs": [
+        {
+          "name": "disk_usage_result",
+          "type": "string",
+          "description": "Kết quả kiểm tra disk dạng text"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Check Disk Space on DB Server",
+          "module": "ansible.builtin.command",
+          "args": {
+            "cmd": "df -h {{ target_path }}"
+          },
+          "register": "disk_usage_result"
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "estimatedDurationSec": 60
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Playbook self-verifies via Ansible module"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      },
+      "riskDefault": "LOW"
+    },
+    {
+      "id": "DISK_CLEANUP_TMP",
+      "name": "Clean Up Temp Files",
+      "domain": "CNTT",
+      "capability": "SERVICE_RESTART",
+      "description": "",
+      "inputs": [
+        {
+          "name": "tmp_dir",
+          "label": "Temp Directory Path",
+          "type": "string",
+          "default": "/tmp",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$"
+        },
+        {
+          "name": "older_than_days",
+          "label": "Delete files older than (days)",
+          "type": "string",
+          "default": "7",
+          "required": true,
+          "validation": ""
+        }
+      ],
+      "outputs": [
+        {
+          "name": "cleanup_result",
+          "type": "string",
+          "description": "Thông báo kết quả quá trình dọn dẹp"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Clean Up Temp Files",
+          "module": "ansible.builtin.shell",
+          "args": {
+            "executable": "/bin/bash",
+            "cmd": "find {{ tmp_dir }} -type f -mtime +{{ older_than_days }} -delete && echo \"Cleaned successfully\""
+          },
+          "register": "cleanup_result"
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "estimatedDurationSec": 60
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Playbook self-verifies via Ansible module"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      },
+      "riskDefault": "MEDIUM"
+    },
+    {
+      "id": "DISK_VERIFY_AFTER",
+      "name": "Verify Disk Space After Cleanup",
+      "domain": "CNTT",
+      "capability": "POST_VERIFY",
+      "description": "Kiểm tra lại dung lượng disk sau khi dọn dẹp và in tóm tắt kết quả để lưu vào audit log.\n",
+      "inputs": [
+        {
+          "name": "target_path",
+          "label": "Target Path to Verify",
+          "type": "string",
+          "default": "/",
+          "required": true,
+          "validation": "^[a-zA-Z0-9@._-]+$"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "verify_disk_result",
+          "type": "string",
+          "description": "Trạng thái disk sau cleanup — PASS hoặc FAIL cùng số liệu"
+        }
+      ],
+      "task_template": [
+        {
+          "name": "Verify Disk Space After Cleanup",
+          "module": "ansible.builtin.command",
+          "args": {
+            "cmd": "df -h {{ target_path }}"
+          },
+          "register": "verify_disk_result"
+        }
+      ],
+      "implementation": {
+        "provider": "ansible",
+        "estimatedDurationSec": 60
+      },
+      "verification": {
+        "type": "embedded",
+        "note": "Playbook self-verifies via Ansible module"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      },
+      "riskDefault": "LOW"
     }
   ],
   "blueprints": [
@@ -313,6 +471,39 @@
           {
             "stepIndex": 3,
             "action": "DB_POST_VERIFY"
+          }
+        ],
+        "compensation": {
+          "onFailure": "NOTIFY_ONCALL"
+        },
+        "status": "PUBLISHED"
+      }
+    },
+    {
+      "kind": "AutomationBlueprint",
+      "metadata": {
+        "name": "db-disk-health-check",
+        "version": "1.0.0"
+      },
+      "spec": {
+        "owner": "DevOps-Admin",
+        "domain": "CNTT",
+        "description": "",
+        "steps": [
+          {
+            "stepIndex": 1,
+            "action": "DISK_SPACE_CHECK",
+            "inputs": {}
+          },
+          {
+            "stepIndex": 2,
+            "action": "DISK_CLEANUP_TMP",
+            "inputs": {}
+          },
+          {
+            "stepIndex": 3,
+            "action": "DISK_VERIFY_AFTER",
+            "inputs": {}
           }
         ],
         "compensation": {
