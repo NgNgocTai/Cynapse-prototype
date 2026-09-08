@@ -12,9 +12,13 @@ import {
   listActions, getAction, addAction, updateAction, deleteAction,
   listBlueprints, getBlueprint, addBlueprint, updateBlueprint, deleteBlueprint
 } from './catalogStore.js';
+import net from 'net';
 import {
   listCredentials, getCredential, addCredential, updateCredential, deleteCredential, getCredentialSecrets
 } from './credentialStore.js';
+import {
+  getInventory, getHosts, getHost, saveHost, deleteHost, getGroups, saveGroup, validateTargetSecurity, resolveTarget
+} from './inventoryStore.js';
 import {
   getPlaybookSource,
   getAvailableTemplates,
@@ -376,6 +380,152 @@ app.delete('/api/credentials/:id', (req, res) => {
 });
 
 // ===========================
+// INVENTORY & HYBRID TARGET MANAGEMENT (AWX Architecture)
+// ===========================
+
+// GET /api/inventory - Full inventory (hosts & groups)
+app.get('/api/inventory', (req, res) => {
+  res.json(getInventory());
+});
+
+// GET /api/inventory/hosts
+app.get('/api/inventory/hosts', (req, res) => {
+  res.json(getHosts());
+});
+
+// POST /api/inventory/hosts - Add or update host
+app.post('/api/inventory/hosts', (req, res) => {
+  const { name, ansible_host, ansible_port } = req.body;
+  if (!name || !ansible_host) {
+    return res.status(400).json({ error: 'name and ansible_host are required' });
+  }
+
+  // Security format validation
+  const sec = validateTargetSecurity(`${ansible_host}:${ansible_port || 22}`);
+  if (!sec.valid && sec.targetType !== 'host' && sec.targetType !== 'group') {
+    return res.status(400).json({ error: `Security check failed: ${sec.reason}` });
+  }
+
+  const record = saveHost(req.body);
+  writeAudit('Inventory', record.name, 'user', 'saved_host', 'success',
+    `Host ${record.name} (${record.ansible_host}:${record.ansible_port}) updated in inventory`);
+  res.status(201).json(record);
+});
+
+// DELETE /api/inventory/hosts/:name - Delete host
+app.delete('/api/inventory/hosts/:name', (req, res) => {
+  const ok = deleteHost(req.params.name);
+  if (!ok) {
+    return res.status(404).json({ error: 'Host not found' });
+  }
+  writeAudit('Inventory', req.params.name, 'user', 'deleted_host', 'success',
+    `Host ${req.params.name} deleted from inventory`);
+  res.json({ message: `Host ${req.params.name} deleted` });
+});
+
+// GET /api/inventory/groups
+app.get('/api/inventory/groups', (req, res) => {
+  res.json(getGroups());
+});
+
+// POST /api/inventory/groups - Create or update group
+app.post('/api/inventory/groups', (req, res) => {
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'Group name is required' });
+  }
+  const record = saveGroup(req.body);
+  writeAudit('Inventory', record.name, 'user', 'saved_group', 'success',
+    `Group ${record.name} (${(record.members || []).length} members) saved`);
+  res.status(201).json(record);
+});
+
+// POST /api/inventory/validate-target - Test target string against security guardrails
+app.post('/api/inventory/validate-target', (req, res) => {
+  const { target } = req.body;
+  const result = validateTargetSecurity(target);
+  res.json(result);
+});
+
+// Rate limiter state for ping tests (max 10 requests per minute)
+const pingRateLimits = new Map();
+
+// POST /api/inventory/ping - Test network connectivity (TCP port scan)
+app.post('/api/inventory/ping', async (req, res) => {
+  const { target } = req.body;
+  if (!target) {
+    return res.status(400).json({ error: 'Target is required' });
+  }
+
+  // 1. Rate limiting check (Sliding 60s window)
+  const clientIp = req.ip || 'client';
+  const now = Date.now();
+  const clientHistory = pingRateLimits.get(clientIp) || [];
+  const recentPings = clientHistory.filter(ts => now - ts < 60000);
+  if (recentPings.length >= 10) {
+    return res.status(429).json({ error: 'Rate limit exceeded for ping test (max 10/min)' });
+  }
+  recentPings.push(now);
+  pingRateLimits.set(clientIp, recentPings);
+
+  // 2. Security validation
+  const security = validateTargetSecurity(target);
+  if (!security.valid) {
+    return res.status(400).json({ error: `Target blocked by security policy: ${security.reason}` });
+  }
+
+  // 3. Resolve destination host & port
+  let host = security.host;
+  let port = security.port || 22;
+
+  if (security.targetType === 'host' && security.hostRecord) {
+    host = security.hostRecord.ansible_host;
+    port = security.hostRecord.ansible_port || 22;
+  } else if (security.targetType === 'group' && security.group) {
+    const { hosts } = getInventory();
+    const firstMember = hosts.find(h => security.group.members.includes(h.name));
+    if (firstMember) {
+      host = firstMember.ansible_host;
+      port = firstMember.ansible_port || 22;
+    }
+  }
+
+  // 4. Perform TCP socket check
+  const start = Date.now();
+  const checkSocket = () => new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(3500);
+
+    socket.connect(port, host, () => {
+      const latencyMs = Date.now() - start;
+      socket.destroy();
+      resolve({ reachable: true, latencyMs });
+    });
+
+    socket.on('error', (err) => {
+      socket.destroy();
+      resolve({ reachable: false, error: err.message, latencyMs: Date.now() - start });
+    });
+
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve({ reachable: false, error: 'Connection timed out (3.5s)', latencyMs: Date.now() - start });
+    });
+  });
+
+  const outcome = await checkSocket();
+  writeAudit('Inventory', target, 'operator', 'connectivity_test', outcome.reachable ? 'success' : 'failed',
+    `Ping TCP ${host}:${port} -> ${outcome.reachable ? `Reachable (${outcome.latencyMs}ms)` : `Unreachable: ${outcome.error}`}`);
+
+  res.json({
+    target,
+    resolvedHost: host,
+    port,
+    ...outcome
+  });
+});
+
+// ===========================
 // CHANGES
 // ===========================
 
@@ -399,12 +549,28 @@ app.post('/api/changes', (req, res) => {
       inputs
     }));
   }
+
+  // SECURITY GUARDRAIL 1: Target boundary validation
+  const targetValidation = validateTargetSecurity(target);
+  if (!targetValidation.valid) {
+    return res.status(400).json({
+      error: `Security Boundary Violation: ${targetValidation.reason}`
+    });
+  }
+
+  // SECURITY GUARDRAIL 2 (Anti-Pivot): Ad-hoc target requires explicit credential selection
+  if (targetValidation.targetType === 'adhoc' && !credentialId) {
+    return res.status(400).json({
+      error: `Ad-hoc target '${target}' requires explicit credential selection from the Vault.`
+    });
+  }
   
   const changeId = `CHG-${String(changeCounter++).padStart(3, '0')}`;
   const change = {
     id: changeId,
     objective,
     target,
+    targetType: targetValidation.targetType,
     domain,
     credentialId,
     constraints,
@@ -416,7 +582,7 @@ app.post('/api/changes', (req, res) => {
   };
   
   state.changes.set(changeId, change);
-  writeAudit('Change', changeId, 'system', 'created', 'success', `Objective: ${objective}`);
+  writeAudit('Change', changeId, 'system', 'created', 'success', `Objective: ${objective}, Target: ${target} (${targetValidation.targetType})`);
   
   res.status(201).json(change);
 });
@@ -618,9 +784,18 @@ async function runOrchestrator(executionId, plan, changeId) {
     }
   }
 
+  let effectiveCredId = change.credentialId;
+  if (!effectiveCredId && change.target) {
+    const hostRec = getHost(change.target);
+    if (hostRec && hostRec.defaultCredentialId) {
+      effectiveCredId = hostRec.defaultCredentialId;
+      execution.logTail += `[ORCHESTRATOR] Auto-bound Default Host Credential "${hostRec.defaultCredentialId}" for registered host "${hostRec.name}"\n`;
+    }
+  }
+
   // 2.1 Inject Managed Credential (AWX Architecture)
-  if (change.credentialId) {
-    const credSecrets = getCredentialSecrets(change.credentialId);
+  if (effectiveCredId) {
+    const credSecrets = getCredentialSecrets(effectiveCredId);
     if (credSecrets) {
       execution.logTail += `[ORCHESTRATOR] Attached Credential: "${credSecrets.name}" (${credSecrets.type.toUpperCase()})\n`;
       if (credSecrets.username) {

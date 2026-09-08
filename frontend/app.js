@@ -11,6 +11,7 @@ const state = {
     blueprints: [],
     actions: [],
     credentials: [],
+    inventory: { hosts: [], groups: [] },
     executions: [],
     executionLog: [],
     auditLog: [],
@@ -99,6 +100,16 @@ async function loadInitialData() {
             console.warn('Could not load credentials:', credErr);
         }
 
+        // Load inventory (AWX Hybrid Target Management)
+        try {
+            const invRes = await fetch(`${state.backendUrl}/api/inventory`);
+            if (invRes.ok) {
+                state.inventory = await invRes.json();
+            }
+        } catch (invErr) {
+            console.warn('Could not load inventory:', invErr);
+        }
+
         // Load module schemas for Task Definition Builder
         try {
             const schemasRes = await fetch(`${state.backendUrl}/api/module-schemas`);
@@ -155,7 +166,7 @@ function initRoleSelector() {
 
 // View Renderer
 function renderView(viewName) {
-    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'credentials', 'audit'];
+    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'credentials', 'inventory', 'audit'];
     if (!validViews.includes(viewName)) {
         viewName = 'home';
     }
@@ -189,6 +200,7 @@ function renderView(viewName) {
         blueprints: renderBlueprintsView,
         actions: renderActionsView,
         credentials: renderCredentialsView,
+        inventory: renderInventoryView,
         audit: renderAuditView
     };
     
@@ -1204,6 +1216,449 @@ async function deleteCredentialConfirm(credId) {
     } catch (err) {
         console.error('Delete credential error:', err);
         alert('Error deleting credential: ' + err.message);
+    }
+}
+
+// ============================================================
+// INVENTORY VIEW — Hosts, Groups & Connectivity Management
+// ============================================================
+function renderInventoryView() {
+    const hosts = state.inventory?.hosts || [];
+    const groups = state.inventory?.groups || [];
+    const prodCount = hosts.filter(h => h.environment === 'production').length;
+    const stagingCount = hosts.filter(h => h.environment === 'staging').length;
+
+    return `
+        <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <div>
+                <h2 class="card-title" style="margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <span>🌐</span> Infrastructure Inventory
+                </h2>
+                <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">
+                    Manage Enterprise Hosts, HA Clusters & Dynamic Ad-hoc Target resolution with Zero-Trust network guardrails.
+                </div>
+            </div>
+            <div style="display: flex; gap: 0.75rem;">
+                <button class="btn btn-secondary" onclick="openGroupModal()">+ New Group</button>
+                <button class="btn btn-primary" onclick="openHostModal()">+ New Host</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid #1f2937; padding-bottom: 0.75rem;">
+                <div style="font-size: 0.85rem; color: #94a3b8; display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap;">
+                    <span>Total Nodes: <strong style="color: #60a5fa;">${hosts.length}</strong></span>
+                    <span>Cluster Groups: <strong style="color: #38bdf8;">${groups.length}</strong></span>
+                    <span>🔴 Production: <strong style="color: #f87171;">${prodCount}</strong></span>
+                    <span>🟡 Staging/Lab: <strong style="color: #fcd34d;">${stagingCount}</strong></span>
+                </div>
+                <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="loadInventoryData(true)">↻ Refresh</button>
+            </div>
+
+            <h3 style="font-size: 1rem; color: #f3f4f6; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.4rem;">
+                <span>🖥️</span> Managed Inventory Hosts
+            </h3>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Host Name</th>
+                        <th>Connection Target</th>
+                        <th>Platform / OS</th>
+                        <th>Environment</th>
+                        <th>Cluster Groups</th>
+                        <th>Default Credential</th>
+                        <th>Connectivity</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${hosts.length > 0 ? hosts.map(h => {
+                        const defaultCred = state.credentials.find(c => c.id === h.defaultCredentialId);
+                        return `
+                        <tr>
+                            <td>
+                                <div style="font-weight: 600; color: #f3f4f6; font-size: 0.9rem;">${escapeHtml(h.name)}</div>
+                                ${h.description ? `<div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.15rem;">${escapeHtml(h.description)}</div>` : ''}
+                            </td>
+                            <td>
+                                <code style="color: #93c5fd; background: rgba(59,130,246,0.1); padding: 0.2rem 0.45rem; border-radius: 0.25rem; font-size: 0.8rem; font-family: 'Fira Code', monospace;">
+                                    ${escapeHtml(h.ansible_host)}:${h.ansible_port || 22}
+                                </code>
+                            </td>
+                            <td>
+                                <span style="font-size: 0.8rem; color: #cbd5e1;">${escapeHtml(h.os || 'Linux')}</span>
+                            </td>
+                            <td>
+                                ${h.environment === 'production' 
+                                    ? `<span class="badge-prod">Production</span>` 
+                                    : `<span class="badge-staging">Staging</span>`}
+                            </td>
+                            <td>
+                                <div style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+                                    ${(h.groups || []).map(g => `<span class="badge-group">${escapeHtml(g)}</span>`).join('')}
+                                </div>
+                            </td>
+                            <td>
+                                ${defaultCred 
+                                    ? `<span class="badge-machine" title="Bound Credential">🔐 ${escapeHtml(defaultCred.name)}</span>` 
+                                    : `<span style="color: #6b7280; font-size: 0.75rem;">None</span>`}
+                            </td>
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                    <button class="btn btn-secondary" id="pingBtn_${escapeHtml(h.name)}" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="testHostConnectivity('${escapeHtml(h.name)}', 'pingBtn_${escapeHtml(h.name)}', 'pingRes_${escapeHtml(h.name)}')">
+                                        ⚡ Ping
+                                    </button>
+                                    <span id="pingRes_${escapeHtml(h.name)}"></span>
+                                </div>
+                            </td>
+                            <td>
+                                <div style="display: flex; gap: 0.35rem;">
+                                    <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="openHostModal('${escapeHtml(h.name)}')">Edit</button>
+                                    <button class="btn btn-danger" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="deleteHostConfirm('${escapeHtml(h.name)}')">Delete</button>
+                                </div>
+                            </td>
+                        </tr>
+                        `;
+                    }).join('') : `
+                        <tr>
+                            <td colspan="8" style="text-align: center; color: #9ca3af; padding: 2rem;">
+                                No inventory hosts defined yet. Click "+ New Host" to add your first server.
+                            </td>
+                        </tr>
+                    `}
+                </tbody>
+            </table>
+
+            <!-- Groups Section -->
+            <div style="margin-top: 2rem; border-top: 1px solid #1f2937; padding-top: 1.25rem;">
+                <h3 style="font-size: 1rem; color: #f3f4f6; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.4rem;">
+                    <span>👥</span> Cluster & Inventory Groups
+                </h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;">
+                    ${groups.length > 0 ? groups.map(g => `
+                        <div class="cred-card">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+                                <div>
+                                    <div style="font-weight: 600; color: #f3f4f6; font-size: 0.95rem;">${escapeHtml(g.name)}</div>
+                                    <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.15rem;">${escapeHtml(g.description || 'No description')}</div>
+                                </div>
+                                <span class="badge badge-info" style="font-size: 0.68rem;">${escapeHtml(g.domain || 'CNTT')}</span>
+                            </div>
+                            <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.4rem;">
+                                Members: <strong style="color: #60a5fa;">${(g.members || []).length}</strong> node(s)
+                            </div>
+                            <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
+                                ${(g.members || []).map(m => `
+                                    <span class="badge-host">🖥️ ${escapeHtml(m)}</span>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `).join('') : `
+                        <div style="color: #9ca3af; font-size: 0.85rem;">No groups created.</div>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+async function loadInventoryData(silent = false) {
+    try {
+        const res = await fetch(`${state.backendUrl}/api/inventory`);
+        if (!res.ok) throw new Error('Failed to fetch inventory');
+        state.inventory = await res.json();
+        if (state.currentView === 'inventory') {
+            renderView('inventory');
+        }
+        if (silent) {
+            console.log('Inventory refreshed:', state.inventory);
+        }
+    } catch (err) {
+        console.error('Error refreshing inventory:', err);
+        if (!silent) alert('Failed to refresh inventory: ' + err.message);
+    }
+}
+
+async function testHostConnectivity(target, btnId, resultId) {
+    const btn = document.getElementById(btnId);
+    const resultSpan = document.getElementById(resultId);
+    if (!resultSpan) return;
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Testing...';
+    }
+    resultSpan.innerHTML = `<span style="font-size: 0.72rem; color: #9ca3af;">⏳ Connecting...</span>`;
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/inventory/ping`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target })
+        });
+        const data = await res.json();
+
+        if (res.ok && data.reachable) {
+            resultSpan.innerHTML = `<span class="ping-badge-success" title="Resolved ${data.resolvedHost}:${data.port}">● ${data.latencyMs}ms</span>`;
+        } else {
+            const reason = data.error || 'Connection failed';
+            resultSpan.innerHTML = `<span class="ping-badge-fail" title="${escapeHtml(reason)}">● Down</span>`;
+        }
+    } catch (err) {
+        resultSpan.innerHTML = `<span class="ping-badge-fail" title="${escapeHtml(err.message)}">● Err</span>`;
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = '⚡ Ping';
+        }
+    }
+}
+
+function openHostModal(hostName = null) {
+    const host = hostName ? (state.inventory?.hosts || []).find(h => h.name === hostName) : null;
+    const isEdit = !!host;
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 600px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.4rem;">🖥️</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">${isEdit ? `Edit Host "${escapeHtml(host.name)}"` : 'Add Inventory Host'}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Register physical, virtual, or container node target</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label class="form-label">Host Identifier (Name) *</label>
+                            <input type="text" id="hostNameInput" class="form-input" placeholder="e.g. db01, cisco-core-r01" value="${escapeHtml(host?.name || '')}" ${isEdit ? 'readonly style="background: #1e293b;"' : ''}>
+                        </div>
+                        <div>
+                            <label class="form-label">SSH / CLI Port *</label>
+                            <input type="number" id="hostPortInput" class="form-input" placeholder="22" value="${host?.ansible_port || 22}">
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Connection Target (IP Address or FQDN) *</label>
+                        <input type="text" id="hostAddressInput" class="form-input" placeholder="e.g. 192.168.10.15 or db01.internal" value="${escapeHtml(host?.ansible_host || '')}">
+                        <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Zero-Trust check applies: RFC1918 private subnets or registered domains only.</div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label class="form-label">Platform / OS</label>
+                            <select id="hostOsInput" class="form-input">
+                                <option value="Linux Ubuntu" ${(host?.os || '').includes('Ubuntu') ? 'selected' : ''}>Linux Ubuntu</option>
+                                <option value="Linux RHEL / CentOS" ${(host?.os || '').includes('RHEL') ? 'selected' : ''}>Linux RHEL / Rocky</option>
+                                <option value="Cisco IOS-XE" ${(host?.os || '').includes('Cisco') ? 'selected' : ''}>Cisco IOS-XE</option>
+                                <option value="Huawei VRP" ${(host?.os || '').includes('Huawei') ? 'selected' : ''}>Huawei VRP</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Environment</label>
+                            <select id="hostEnvInput" class="form-input">
+                                <option value="production" ${host?.environment === 'production' ? 'selected' : ''}>Production (Strict Audit & +10 Risk)</option>
+                                <option value="staging" ${host?.environment === 'staging' ? 'selected' : ''}>Staging / Lab</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Default Execution Credential (Vault)</label>
+                        <select id="hostCredInput" class="form-input">
+                            <option value="">-- None / Select at Execution Time --</option>
+                            ${state.credentials.map(c => `
+                                <option value="${c.id}" ${host?.defaultCredentialId === c.id ? 'selected' : ''}>
+                                    [${c.type.toUpperCase()}] ${escapeHtml(c.name)} (${c.username})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Auto-selects this credential in New Change dialog when targeting this host.</div>
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Groups (Comma-separated or check below)</label>
+                        <input type="text" id="hostGroupsInput" class="form-input" placeholder="e.g. db_servers, patroni_cluster" value="${(host?.groups || ['all']).join(', ')}">
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Description</label>
+                        <input type="text" id="hostDescInput" class="form-input" placeholder="Primary database node with Patroni HA" value="${escapeHtml(host?.description || '')}">
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveHostFromModal()">${isEdit ? 'Save Changes' : 'Register Host'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function saveHostFromModal() {
+    const name = document.getElementById('hostNameInput').value.trim();
+    const ansible_host = document.getElementById('hostAddressInput').value.trim();
+    const ansible_port = parseInt(document.getElementById('hostPortInput').value, 10) || 22;
+    const os = document.getElementById('hostOsInput').value;
+    const environment = document.getElementById('hostEnvInput').value;
+    const defaultCredentialId = document.getElementById('hostCredInput').value || null;
+    const groupsRaw = document.getElementById('hostGroupsInput').value;
+    const description = document.getElementById('hostDescInput').value.trim();
+
+    if (!name || !ansible_host) {
+        alert('Host Identifier and Connection Address are required');
+        return;
+    }
+
+    const groups = groupsRaw.split(',').map(s => s.trim()).filter(Boolean);
+    if (!groups.includes('all')) groups.push('all');
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/inventory/hosts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                ansible_host,
+                ansible_port,
+                os,
+                environment,
+                defaultCredentialId,
+                groups,
+                description
+            })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+            alert('Failed to save host: ' + (data.error || 'Server error'));
+            return;
+        }
+
+        closeModal();
+        await loadInventoryData(true);
+        renderView('inventory');
+    } catch (err) {
+        alert('Error saving host: ' + err.message);
+    }
+}
+
+async function deleteHostConfirm(hostName) {
+    if (!confirm(`Are you sure you want to remove host "${hostName}" from the inventory?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/inventory/hosts/${hostName}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) {
+            alert('Failed to delete host');
+            return;
+        }
+        await loadInventoryData(true);
+        renderView('inventory');
+    } catch (err) {
+        alert('Error deleting host: ' + err.message);
+    }
+}
+
+function openGroupModal(groupName = null) {
+    const group = groupName ? (state.inventory?.groups || []).find(g => g.name === groupName) : null;
+    const isEdit = !!group;
+    const allHosts = state.inventory?.hosts || [];
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 540px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.4rem;">👥</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">${isEdit ? `Edit Group "${escapeHtml(group.name)}"` : 'Create Cluster Group'}</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Group multiple servers for multi-host playbook execution</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Group Name *</label>
+                        <input type="text" id="groupNameInput" class="form-input" placeholder="e.g. patroni_cluster, core_routers" value="${escapeHtml(group?.name || '')}" ${isEdit ? 'readonly style="background: #1e293b;"' : ''}>
+                    </div>
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Domain</label>
+                        <select id="groupDomainInput" class="form-input">
+                            <option value="CNTT" ${group?.domain === 'CNTT' ? 'selected' : ''}>CNTT</option>
+                            <option value="IP" ${group?.domain === 'IP' ? 'selected' : ''}>IP / Backbone</option>
+                            <option value="5G" ${group?.domain === '5G' ? 'selected' : ''}>5G Core</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Description</label>
+                        <input type="text" id="groupDescInput" class="form-input" placeholder="High Availability Database Cluster" value="${escapeHtml(group?.description || '')}">
+                    </div>
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Select Group Members</label>
+                        <div style="max-height: 180px; overflow-y: auto; background: #111827; border: 1px solid #1f2937; border-radius: 0.375rem; padding: 0.75rem;">
+                            ${allHosts.map(h => {
+                                const checked = (group?.members || []).includes(h.name);
+                                return `
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; color: #d1d5db; font-size: 0.85rem; cursor: pointer;">
+                                        <input type="checkbox" name="groupMemberCheckbox" value="${escapeHtml(h.name)}" ${checked ? 'checked' : ''} style="width: auto;">
+                                        <span><strong>${escapeHtml(h.name)}</strong> (${escapeHtml(h.ansible_host)})</span>
+                                    </label>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveGroupFromModal()">${isEdit ? 'Save Changes' : 'Create Group'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function saveGroupFromModal() {
+    const name = document.getElementById('groupNameInput').value.trim();
+    const domain = document.getElementById('groupDomainInput').value;
+    const description = document.getElementById('groupDescInput').value.trim();
+    const checkboxes = document.querySelectorAll('input[name="groupMemberCheckbox"]:checked');
+    const members = Array.from(checkboxes).map(cb => cb.value);
+
+    if (!name) {
+        alert('Group Name is required');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/inventory/groups`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, domain, description, members })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert('Failed to save group: ' + (data.error || 'Server error'));
+            return;
+        }
+
+        closeModal();
+        await loadInventoryData(true);
+        renderView('inventory');
+    } catch (err) {
+        alert('Error saving group: ' + err.message);
     }
 }
 
@@ -3020,11 +3475,24 @@ function openNewChangeModal(selectedObjective = null) {
                         ${renderChangeStepsOverrideList()}
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 0.5rem;">
                         <div>
-                            <label class="form-label">Target Hosts *</label>
-                            <input type="text" id="targetInput" class="form-input" placeholder="e.g., db01, db_servers" value="db01">
-                            <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Ansible target host or inventory group (e.g. db01)</div>
+                            <label class="form-label">Target Hosts / Clusters / Ad-hoc *</label>
+                            <input type="text" id="targetInput" class="form-input" list="inventoryTargetsList" placeholder="e.g. db01, patroni_cluster, or 192.168.1.50:2222" value="db01" oninput="onTargetInputChange(this.value)">
+                            <datalist id="inventoryTargetsList">
+                                <optgroup label="Cluster Groups">
+                                    ${(state.inventory?.groups || []).map(g => `<option value="${escapeHtml(g.name)}">[Cluster] ${escapeHtml(g.name)} (${(g.members || []).length} nodes)</option>`).join('')}
+                                </optgroup>
+                                <optgroup label="Managed Inventory Hosts">
+                                    ${(state.inventory?.hosts || []).map(h => `<option value="${escapeHtml(h.name)}">[Host] ${escapeHtml(h.name)} (${escapeHtml(h.ansible_host)}:${h.ansible_port || 22})</option>`).join('')}
+                                </optgroup>
+                            </datalist>
+                            <div id="targetHintContainer">
+                                <div class="target-hint-box target-hint-registered">
+                                    <span>✅</span>
+                                    <span>Registered Host: <strong>db01</strong> (anhvhn.duckdns.org:2222) • Default credential auto-selected</span>
+                                </div>
+                            </div>
                         </div>
                         <div>
                             <label class="form-label">Domain</label>
@@ -3520,6 +3988,83 @@ function switchExecutionChange(changeId) {
     executeChange(changeId, false);
 }
 
+function onTargetInputChange(targetVal) {
+    const hintContainer = document.getElementById('targetHintContainer');
+    const credInput = document.getElementById('credentialInput');
+    if (!hintContainer) return;
+
+    if (!targetVal || !targetVal.trim()) {
+        hintContainer.innerHTML = '';
+        return;
+    }
+
+    const trimmed = targetVal.trim();
+    const hosts = state.inventory?.hosts || [];
+    const groups = state.inventory?.groups || [];
+
+    // 1. Check if registered host
+    const matchedHost = hosts.find(h => h.name.toLowerCase() === trimmed.toLowerCase() || h.ansible_host.toLowerCase() === trimmed.toLowerCase());
+    if (matchedHost) {
+        hintContainer.innerHTML = `
+            <div class="target-hint-box target-hint-registered">
+                <span>✅</span>
+                <span>Registered Host: <strong>${escapeHtml(matchedHost.name)}</strong> (${escapeHtml(matchedHost.ansible_host)}:${matchedHost.ansible_port || 22}) • Env: <em>${matchedHost.environment}</em></span>
+            </div>
+        `;
+        if (matchedHost.defaultCredentialId && credInput) {
+            credInput.value = matchedHost.defaultCredentialId;
+        }
+        return;
+    }
+
+    // 2. Check if registered group
+    const matchedGroup = groups.find(g => g.name.toLowerCase() === trimmed.toLowerCase());
+    if (matchedGroup) {
+        const count = (matchedGroup.members || []).length;
+        hintContainer.innerHTML = `
+            <div class="target-hint-box target-hint-registered">
+                <span>👥</span>
+                <span>Cluster Group: <strong>${escapeHtml(matchedGroup.name)}</strong> (${count} nodes) • Blast Radius: Multi-host (+15 Risk)</span>
+            </div>
+        `;
+        return;
+    }
+
+    // 3. Security Boundary: Loopback / Cloud Metadata
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith('127.') || lower === 'localhost' || lower === '::1') {
+        hintContainer.innerHTML = `
+            <div class="target-hint-box target-hint-blocked">
+                <span>⛔</span>
+                <span><strong>Security Boundary Violation:</strong> Loopback address is strictly prohibited.</span>
+            </div>
+        `;
+        return;
+    }
+
+    if (lower.startsWith('169.254.')) {
+        hintContainer.innerHTML = `
+            <div class="target-hint-box target-hint-blocked">
+                <span>⛔</span>
+                <span><strong>Security Boundary Violation:</strong> Cloud metadata service IP (169.254.x.x) is strictly prohibited.</span>
+            </div>
+        `;
+        return;
+    }
+
+    // 4. Ad-hoc target (Anti-Pivot rule)
+    hintContainer.innerHTML = `
+        <div class="target-hint-box target-hint-adhoc">
+            <span>⚠️</span>
+            <span><strong>Ad-hoc Target:</strong> Unregistered node (+20 Risk). Anti-Pivot policy requires you to explicitly select an authorized credential from Vault.</span>
+        </div>
+    `;
+    // Anti-pivot: do not auto-fill credential for ad-hoc targets
+    if (credInput && credInput.value === 'cred-db01') {
+        credInput.value = '';
+    }
+}
+
 async function createChange() {
     const objective = document.getElementById('objectiveInput').value;
     const target = document.getElementById('targetInput').value;
@@ -3547,7 +4092,8 @@ async function createChange() {
         });
         
         if (!res.ok) {
-            alert('Failed to create change');
+            const errData = await res.json().catch(() => ({}));
+            alert('Failed to create change: ' + (errData.error || res.statusText));
             return;
         }
 

@@ -1,4 +1,5 @@
 import { getCatalog } from './catalogStore.js';
+import { resolveTarget } from './inventoryStore.js';
 
 export function calculateRisk(change) {
   if (!change || !change.objective) {
@@ -15,6 +16,9 @@ export function calculateRisk(change) {
     'HIGH': 75,
     'CRITICAL': 95
   };
+
+  let baseRiskScore = 50;
+  let baseReason = 'Standard operation';
 
   // 1. Check if objective matches a Blueprint
   const blueprint = catalog.blueprints.find(b => {
@@ -35,28 +39,57 @@ export function calculateRisk(change) {
       }
     }
 
-    return {
-      riskScore: maxRiskScore,
-      reason: `Blueprint ${blueprint.metadata.name} has ${blueprint.spec.steps.length} steps. Peak risk from ${highestRiskAction || 'steps'}`
-    };
+    baseRiskScore = maxRiskScore;
+    baseReason = `Blueprint ${blueprint.metadata.name} has ${blueprint.spec.steps.length} steps. Peak risk from ${highestRiskAction || 'steps'}`;
+  } else {
+    // 2. Check if objective matches a single Action primitive
+    const action = catalog.actions.find(a => 
+      objStr === a.id || 
+      normalizedObj === a.id.toUpperCase().replace(/[-\s]/g, '_') ||
+      a.id.includes(normalizedObj)
+    );
+
+    if (action) {
+      baseRiskScore = riskMap[action.riskDefault] || 50;
+      baseReason = `Action primitive ${action.id} default risk: ${action.riskDefault}`;
+    }
   }
 
-  // 2. Check if objective matches a single Action primitive
-  const action = catalog.actions.find(a => 
-    objStr === a.id || 
-    normalizedObj === a.id.toUpperCase().replace(/[-\s]/g, '_') ||
-    a.id.includes(normalizedObj)
-  );
+  // 3. Context-Aware Target Risk Evaluation
+  let targetModifier = 0;
+  const targetDetails = [];
 
-  if (action) {
-    const riskScore = riskMap[action.riskDefault] || 50;
-    return {
-      riskScore,
-      reason: `Action primitive ${action.id} default risk: ${action.riskDefault}`
-    };
+  if (change.target) {
+    try {
+      const resolved = resolveTarget(change.target);
+      if (resolved.type === 'adhoc') {
+        targetModifier += 20;
+        targetDetails.push('Ad-hoc unregistered node (+20 risk)');
+      } else if (resolved.type === 'group') {
+        const count = resolved.members?.length || 1;
+        targetModifier += 15;
+        targetDetails.push(`Multi-host cluster '${resolved.name}' (${count} nodes) (+15 risk)`);
+      } else if (resolved.type === 'host') {
+        if (resolved.environment === 'production') {
+          targetModifier += 10;
+          targetDetails.push('Production environment host (+10 risk)');
+        }
+      }
+    } catch (e) {
+      targetModifier += 25;
+      targetDetails.push(`Unverified target '${change.target}' (+25 risk)`);
+    }
   }
 
-  return { riskScore: 50, reason: 'Unknown objective, default medium risk' };
+  const finalScore = Math.min(95, Math.max(10, baseRiskScore + targetModifier));
+  const fullReason = targetDetails.length > 0 
+    ? `${baseReason} | Target Factors: ${targetDetails.join(', ')}`
+    : baseReason;
+
+  return {
+    riskScore: finalScore,
+    reason: fullReason
+  };
 }
 
 export function validateDAGIntegrity(change) {

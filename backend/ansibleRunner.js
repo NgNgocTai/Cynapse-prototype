@@ -74,6 +74,8 @@ export function detectAnsibleEnvironment() {
  * @param {function} [options.onStepProgress] - Step status change callback
  * @returns {Promise<{ success: boolean, exitCode: number, logTail: string }>}
  */
+import { validateTargetSecurity, getInventory } from './inventoryStore.js';
+
 export async function runAnsiblePlaybook({
   playbookContent,
   targetHosts = 'db_servers',
@@ -91,6 +93,7 @@ export async function runAnsiblePlaybook({
   const safeId = executionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   const playbookPath = path.join(tmpDir, `playbook_${safeId}.yml`);
   const varsPath = path.join(tmpDir, `vars_${safeId}.json`);
+  const inventoryPath = path.join(tmpDir, `inventory_${safeId}.ini`);
   let keyPath = null;
 
   // Path handling for WSL if needed
@@ -110,8 +113,20 @@ export async function runAnsiblePlaybook({
   };
 
   appendLog(`[ANSIBLE RUNNER] Initializing execution ${executionId}...`);
-  appendLog(`[ANSIBLE RUNNER] Target Host: ${targetHosts}`);
+  appendLog(`[ANSIBLE RUNNER] Target Host / Pattern: ${targetHosts}`);
   appendLog(`[ANSIBLE RUNNER] Engine Mode: ${env.type.toUpperCase()} ${env.command ? `(${env.command})` : '(Realistic Terminal Simulation)'}`);
+
+  // SECURITY GUARDRAIL: Network Boundary & Anti-Injection check
+  const security = validateTargetSecurity(targetHosts);
+  if (!security.valid) {
+    appendLog(`[ANSIBLE RUNNER] ⛔ SECURITY BLOCKED: Target '${targetHosts}' rejected: ${security.reason}`);
+    onStepProgress(0, 'FAILED');
+    return {
+      success: false,
+      exitCode: 1,
+      logTail: fullLog
+    };
+  }
 
   // Fallback: If no real Ansible installed on host machine, run realistic terminal simulation
   if (env.type === 'simulated') {
@@ -124,10 +139,49 @@ export async function runAnsiblePlaybook({
   }
 
   try {
-    // 1. Write Playbook YAML
+    // 1. Generate Ephemeral Dynamic Inventory based on Synapse Inventory Store
+    const { hosts: allHosts, groups: allGroups } = getInventory();
+    let inventoryIni = '# Synapse Ephemeral Dynamic Inventory\n\n';
+
+    // If ad-hoc target
+    if (security.targetType === 'adhoc') {
+      const adhocPortStr = security.port ? ` ansible_port=${security.port}` : '';
+      inventoryIni += `[adhoc_targets]\n${security.host} ansible_host=${security.host}${adhocPortStr}\n\n`;
+      extraVars.ansible_ssh_common_args = `${extraVars.ansible_ssh_common_args || ''} -o StrictHostKeyChecking=accept-new`.trim();
+      if (security.port) {
+        extraVars.ansible_port = security.port;
+      }
+    }
+
+    // Map registered hosts
+    const hostLineMap = new Map();
+    allHosts.forEach(h => {
+      const pStr = h.ansible_port ? ` ansible_port=${h.ansible_port}` : '';
+      hostLineMap.set(h.name, `${h.name} ansible_host=${h.ansible_host}${pStr}`);
+    });
+
+    // Write registered groups
+    allGroups.forEach(g => {
+      inventoryIni += `[${g.name}]\n`;
+      (g.members || []).forEach(mName => {
+        const line = hostLineMap.get(mName);
+        if (line) inventoryIni += `${line}\n`;
+      });
+      inventoryIni += '\n';
+    });
+
+    // Write all registered hosts
+    inventoryIni += `[all_hosts]\n`;
+    hostLineMap.forEach(line => {
+      inventoryIni += `${line}\n`;
+    });
+
+    fs.writeFileSync(inventoryPath, inventoryIni, { encoding: 'utf-8', mode: 0o600 });
+
+    // 2. Write Playbook YAML
     fs.writeFileSync(playbookPath, playbookContent, 'utf-8');
 
-    // 2. Handle raw SSH Key if provided via Credentials (mode 0600)
+    // 3. Handle raw SSH Key if provided via Credentials (mode 0600)
     if (extraVars.ssh_key_data) {
       keyPath = path.join(tmpDir, `key_${safeId}.pem`);
       fs.writeFileSync(keyPath, extraVars.ssh_key_data, { encoding: 'utf-8', mode: 0o600 });
@@ -135,15 +189,16 @@ export async function runAnsiblePlaybook({
       extraVars.ansible_ssh_private_key_file = env.type === 'wsl' ? toWslPath(keyPath) : keyPath;
     }
 
-    // 3. Write Extra Vars securely (mode 0600)
+    // 4. Write Extra Vars securely (mode 0600)
     fs.writeFileSync(varsPath, JSON.stringify(extraVars, null, 2), {
       encoding: 'utf-8',
       mode: 0o600
     });
 
-    // 4. Build command args
+    // 5. Build command args
     let effectivePlaybookPath = playbookPath;
     let effectiveVarsPath = varsPath;
+    let effectiveInventoryPath = inventoryPath;
 
     let bin = 'ansible-playbook';
     let args = [];
@@ -152,31 +207,37 @@ export async function runAnsiblePlaybook({
       bin = 'wsl';
       effectivePlaybookPath = toWslPath(playbookPath);
       effectiveVarsPath = toWslPath(varsPath);
+      effectiveInventoryPath = toWslPath(inventoryPath);
 
       const ansibleExecutable = env.ansibleBin || 'ansible-playbook';
       const wslPrefix = env.distro ? ['-d', env.distro, '-u', env.user || 'ngoctai'] : [];
-      const inventoryArg = env.inventory ? ['-i', env.inventory] : ['-i', `${targetHosts},`];
 
       args = [
         ...wslPrefix,
         ansibleExecutable,
         effectivePlaybookPath,
-        ...inventoryArg,
+        '-i', effectiveInventoryPath,
         '--extra-vars', `@${effectiveVarsPath}`
       ];
     } else {
       args = [
         effectivePlaybookPath,
-        '-i', `${targetHosts},`,
+        '-i', effectiveInventoryPath,
         '--extra-vars', `@${effectiveVarsPath}`
       ];
     }
 
-    appendLog(`[ANSIBLE RUNNER] Command: ${bin} ${args.slice(0, 4).join(' ')} ... --extra-vars @<secure_temp_file>`);
+    appendLog(`[ANSIBLE RUNNER] Command: ${bin} ${args.slice(0, 4).join(' ')} ... -i <dynamic_inventory> --extra-vars @<secure_temp_file>`);
 
-    // 4. Spawn child process
+    // 6. Spawn child process with safe execution flags (pipelining, roles path)
     const child = spawn(bin, args, {
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: '0', PYTHONUNBUFFERED: '1' }
+      env: { 
+        ...process.env, 
+        ANSIBLE_FORCE_COLOR: '0', 
+        PYTHONUNBUFFERED: '1',
+        ANSIBLE_PIPELINING: 'true',
+        ANSIBLE_ROLES_PATH: env.type === 'wsl' ? '/home/ngoctai/projects/SYNAPSE/roles' : path.join(__dirname, 'roles')
+      }
     });
 
     let currentStep = 0;
@@ -231,9 +292,10 @@ export async function runAnsiblePlaybook({
       logTail: fullLog.slice(-5000)
     };
   } finally {
-    // 5. Secure Cleanup: Guarantee deletion of temp credentials & playbook
+    // 5. Secure Cleanup: Guarantee deletion of temp credentials, dynamic inventory & playbook
     try {
       if (varsPath && fs.existsSync(varsPath)) fs.unlinkSync(varsPath);
+      if (inventoryPath && fs.existsSync(inventoryPath)) fs.unlinkSync(inventoryPath);
       if (playbookPath && fs.existsSync(playbookPath)) fs.unlinkSync(playbookPath);
       if (keyPath && fs.existsSync(keyPath)) fs.unlinkSync(keyPath);
     } catch (cleanErr) {

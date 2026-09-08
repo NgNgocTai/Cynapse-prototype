@@ -5,6 +5,7 @@ node_modules/
 
 # Synapse Credentials & Runtime Secrets
 backend/credentials.json
+backend/inventory.json
 backend/tmp/
 *.pem
 *.key

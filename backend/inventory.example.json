@@ -1,0 +1,40 @@
+{
+  "hosts": [
+    {
+      "name": "db-lab-01",
+      "ansible_host": "192.168.10.11",
+      "ansible_port": 22,
+      "os": "Linux Ubuntu",
+      "domain": "CNTT",
+      "environment": "staging",
+      "groups": ["db_servers", "all"],
+      "defaultCredentialId": "cred-db01",
+      "description": "Lab Database Server (Staging)"
+    },
+    {
+      "name": "cisco-r01",
+      "ansible_host": "10.10.20.1",
+      "ansible_port": 22,
+      "os": "Cisco IOS-XE",
+      "domain": "IP",
+      "environment": "staging",
+      "groups": ["core_routers", "all"],
+      "defaultCredentialId": "cred-cisco-devnet",
+      "description": "DevNet Sandbox Core Router"
+    }
+  ],
+  "groups": [
+    {
+      "name": "db_servers",
+      "description": "Database Servers Cluster",
+      "members": ["db-lab-01"],
+      "domain": "CNTT"
+    },
+    {
+      "name": "core_routers",
+      "description": "Backbone & Edge Routers",
+      "members": ["cisco-r01"],
+      "domain": "IP"
+    }
+  ]
+}
