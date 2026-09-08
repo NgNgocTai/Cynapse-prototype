@@ -1237,3 +1237,153 @@ select:hover {
     border-color: #374151;
 }
 
+/* Fact Picker & Data Piping Styles */
+.input-fact-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.input-fact-wrapper .form-input {
+    padding-right: 5.5rem;
+}
+
+.fact-picker-toggle {
+    position: absolute;
+    right: 0.35rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #38bdf8;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.25rem 0.55rem;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    transition: all 0.2s ease;
+    z-index: 2;
+}
+
+.fact-picker-toggle:hover {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+}
+
+.fact-picker-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    width: 360px;
+    max-width: 90vw;
+    max-height: 280px;
+    overflow-y: auto;
+    background: #0f172a;
+    border: 1px solid #38bdf8;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 0 12px rgba(56, 189, 248, 0.25);
+    z-index: 1500;
+    padding: 0.5rem;
+    backdrop-filter: blur(8px);
+}
+
+.fact-dropdown-header {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid #1e293b;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.35rem;
+}
+
+.fact-step-group {
+    margin-bottom: 0.5rem;
+}
+
+.fact-step-group-title {
+    font-size: 0.73rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    background: #1e293b;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.25rem;
+}
+
+.fact-step-group-title span.step-slug {
+    font-family: monospace;
+    color: #38bdf8;
+    font-size: 0.68rem;
+    font-weight: normal;
+}
+
+.fact-option-item {
+    padding: 0.4rem 0.5rem;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    border-left: 2px solid transparent;
+}
+
+.fact-option-item:hover {
+    background: #1e293b;
+    border-left-color: #38bdf8;
+    padding-left: 0.65rem;
+}
+
+.fact-option-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.fact-option-name {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #38bdf8;
+}
+
+.fact-option-type {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.2rem;
+    background: #334155;
+    color: #cbd5e1;
+}
+
+.fact-option-desc {
+    font-size: 0.68rem;
+    color: #94a3b8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fact-option-expr {
+    font-family: monospace;
+    font-size: 0.65rem;
+    color: #10b981;
+    background: #064e3b33;
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.2rem;
+    margin-top: 0.15rem;
+}
+

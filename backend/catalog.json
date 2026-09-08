@@ -317,7 +317,8 @@
         {
           "name": "disk_usage_result",
           "type": "string",
-          "description": "Kết quả kiểm tra disk dạng text"
+          "description": "Kết quả kiểm tra disk dạng text",
+          "extract_field": "stdout"
         }
       ],
       "task_template": [
@@ -372,7 +373,8 @@
         {
           "name": "cleanup_result",
           "type": "string",
-          "description": "Thông báo kết quả quá trình dọn dẹp"
+          "description": "Thông báo kết quả quá trình dọn dẹp",
+          "extract_field": "stdout"
         }
       ],
       "task_template": [
@@ -420,7 +422,8 @@
         {
           "name": "verify_disk_result",
           "type": "string",
-          "description": "Trạng thái disk sau cleanup — PASS hoặc FAIL cùng số liệu"
+          "description": "Trạng thái disk sau cleanup — PASS hoặc FAIL cùng số liệu",
+          "extract_field": "stdout"
         }
       ],
       "task_template": [
@@ -492,16 +495,19 @@
         "steps": [
           {
             "stepIndex": 1,
+            "stepId": "check_disk",
             "action": "DISK_SPACE_CHECK",
             "inputs": {}
           },
           {
             "stepIndex": 2,
+            "stepId": "clean_temp",
             "action": "DISK_CLEANUP_TMP",
             "inputs": {}
           },
           {
             "stepIndex": 3,
+            "stepId": "verify_disk",
             "action": "DISK_VERIFY_AFTER",
             "inputs": {}
           }

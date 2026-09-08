@@ -198,16 +198,32 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
 ---
 `;
 
+    const usedStepIds = new Set();
     steps.forEach((step, idx) => {
       const actionId = typeof step === 'string' ? step : step.action;
       const action = catalog.actions.find(a => a.id === actionId);
       const actionName = action ? action.name : actionId;
-      const override = stepOverrides.find(o => o.stepIndex === idx + 1 || o.action === actionId);
+
+      // Determine stable stepId (slugified and unique)
+      let baseStepId = '';
+      if (step.stepId && typeof step.stepId === 'string' && step.stepId.trim()) {
+        baseStepId = step.stepId.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      } else {
+        baseStepId = actionId.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      }
+      let stepId = baseStepId;
+      let counter = 1;
+      while (usedStepIds.has(stepId)) {
+        stepId = `${baseStepId}_${counter++}`;
+      }
+      usedStepIds.add(stepId);
+
+      const override = stepOverrides.find(o => o.stepIndex === idx + 1 || o.action === actionId || o.stepId === stepId);
       const stepInputs = { ...(step.inputs || {}), ...((override && override.inputs) || {}) };
 
       playbookYaml += `
 # ==============================================================================
-# STEP ${idx + 1}: ${actionName} (${actionId})
+# STEP ${idx + 1}: ${actionName} (${actionId}) [ID: ${stepId}]
 # ==============================================================================
 - name: "Step ${idx + 1}: ${actionName}"
   hosts: "${targetHosts}"
@@ -217,7 +233,11 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
       if (Object.keys(stepInputs).length > 0) {
         playbookYaml += `  vars:\n`;
         for (const [k, v] of Object.entries(stepInputs)) {
-          playbookYaml += `    ${k}: ${typeof v === 'number' || typeof v === 'boolean' ? v : `"${v}"`}\n`;
+          if (typeof v === 'number' || typeof v === 'boolean') {
+            playbookYaml += `    ${k}: ${v}\n`;
+          } else {
+            playbookYaml += `    ${k}: "${v}"\n`;
+          }
         }
       }
 
@@ -248,11 +268,41 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
       }
 
       if (action && Array.isArray(action.outputs) && action.outputs.length > 0) {
-        playbookYaml += `    - name: "${idx + 1}.${(action.task_template?.length || 1) + 1} Export Step ${idx + 1} Facts"\n`;
+        playbookYaml += `    - name: "${idx + 1}.${(action.task_template?.length || 1) + 1} Export Step ${idx + 1} Facts (${stepId})"\n`;
         playbookYaml += `      ansible.builtin.set_fact:\n`;
-        playbookYaml += `        output_step${idx + 1}:\n`;
+        
+        const registeredVar = action.task_template?.find(t => t.register)?.register;
+        const taskModule = action.task_template?.[0]?.module || '';
+
         action.outputs.forEach(out => {
-          playbookYaml += `          ${out.name}: "OK"\n`;
+          const regName = out.register || registeredVar || out.name;
+          let extractExpr = '';
+
+          if (out.extract_field) {
+            extractExpr = `{{ ${regName}.${out.extract_field} | default('') }}`;
+          } else if (taskModule.includes('command') || taskModule.includes('shell')) {
+            extractExpr = `{{ ${regName}.stdout | default('') }}`;
+          } else if (taskModule.includes('uri')) {
+            if (out.name.includes('code') || out.name.includes('status')) {
+              extractExpr = `{{ ${regName}.status | default(200) }}`;
+            } else {
+              extractExpr = `{{ ${regName}.json | default(${regName}.content | default('')) }}`;
+            }
+          } else if (taskModule.includes('systemd') || taskModule.includes('service')) {
+            extractExpr = `{{ ${regName}.status.ActiveState | default(${regName}.state | default('active')) }}`;
+          } else if (out.type === 'boolean') {
+            extractExpr = `{{ ${regName}.rc == 0 if ${regName}.rc is defined else (not ${regName}.failed | default(false)) }}`;
+          } else {
+            extractExpr = `{{ ${regName}.stdout if ${regName}.stdout is defined else (${regName}.msg if ${regName}.msg is defined else ${regName}) }}`;
+          }
+
+          // 1. Hierarchical dict: steps.<stepId>.<factName>
+          playbookYaml += `        steps: "{{ steps | default({}) | combine({ '${stepId}': { '${out.name}': ${extractExpr} } }, recursive=True) }}"\n`;
+          // 2. Direct flat variables for convenience & stability
+          playbookYaml += `        step_${stepId}_${out.name}: "${extractExpr}"\n`;
+          playbookYaml += `        ${stepId}_${out.name}: "${extractExpr}"\n`;
+          // 3. Backwards compatibility
+          playbookYaml += `        output_step${idx + 1}: "{{ output_step${idx + 1} | default({}) | combine({ '${out.name}': ${extractExpr} }) }}"\n`;
         });
       }
     });

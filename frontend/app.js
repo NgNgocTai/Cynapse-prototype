@@ -1979,14 +1979,41 @@ async function openEditBlueprintModal(bpName) {
 
 // Composer helper functions
 function addComposerStep(actionId) {
+    const act = state.actions.find(a => a.id === actionId);
+    const baseSlug = (actionId || 'step').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    let stepId = baseSlug;
+    let counter = 1;
+    while (state.composerSteps.some(s => s.stepId === stepId)) {
+        stepId = `${baseSlug}_${counter++}`;
+    }
     state.composerSteps.push({
         stepIndex: state.composerSteps.length + 1,
+        stepId: stepId,
         action: actionId
     });
     renderComposerStepsList();
 }
 
 function removeComposerStep(index) {
+    const stepToDelete = state.composerSteps[index];
+    if (stepToDelete) {
+        const deletedStepId = stepToDelete.stepId || (typeof stepToDelete.action === 'string' ? stepToDelete.action.toLowerCase().replace(/[^a-z0-9_]/g, '_') : '');
+        const dependentSteps = [];
+        state.composerSteps.forEach((s, sIdx) => {
+            if (sIdx === index) return;
+            const inputs = s.inputs || {};
+            for (const [, v] of Object.entries(inputs)) {
+                if (typeof v === 'string' && v.includes(`steps.${deletedStepId}.`)) {
+                    dependentSteps.push(`Step ${sIdx + 1}`);
+                }
+            }
+        });
+        if (dependentSteps.length > 0) {
+            if (!confirm(`⚠️ CẢNH BÁO PHỤ THUỘC (Dangling Reference):\nCác bước [${dependentSteps.join(', ')}] đang sử dụng Output Fact của bước này!\nXóa bước này sẽ làm gãy tham chiếu dữ liệu.\n\nBạn có chắc chắn muốn xóa không?`)) {
+                return;
+            }
+        }
+    }
     state.composerSteps.splice(index, 1);
     renderComposerStepsList();
 }
@@ -2142,14 +2169,49 @@ function closeConfigureStepModal() {
     if (el) el.remove();
 }
 
-function validateAntiTypoInput(inputEl) {
+function validateAntiTypoInput(inputEl, stepIdx) {
     const val = inputEl.value.trim();
     const pattern = inputEl.dataset.validation;
     const isRequired = inputEl.dataset.required === 'true';
-    const errEl = document.getElementById(inputEl.id.replace('cfg_input_', 'cfg_err_'));
+    const errEl = document.getElementById(inputEl.id.replace('cfg_input_', 'cfg_err_').replace('chg_cfg_', 'cfg_err_'));
 
     let errorMsg = '';
-    if (isRequired && !val) {
+    
+    // Strict Anti-Typo Validator for Dynamic Fact Expressions {{ steps.<stepId>.<factName> }}
+    const dynamicMatch = val.match(/^\{\{\s*steps\.([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_\-]+)\s*\}\}$/);
+    if (dynamicMatch) {
+        const [, targetStepId, targetFactName] = dynamicMatch;
+        let isValidFact = false;
+        let stepFound = false;
+        let availableFacts = [];
+
+        if (stepIdx !== undefined && state.changeStepOverrides && state.changeStepOverrides.length > 0) {
+            for (let pIdx = 0; pIdx < stepIdx; pIdx++) {
+                const prevStep = state.changeStepOverrides[pIdx];
+                if (!prevStep) continue;
+                const prevAction = state.actions.find(a => a.id === prevStep.action);
+                const sSlug = prevStep.stepId || (prevAction?.id.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+                if (sSlug === targetStepId) {
+                    stepFound = true;
+                    availableFacts = (prevAction?.outputs || []).map(o => o.name);
+                    if (availableFacts.includes(targetFactName)) {
+                        isValidFact = true;
+                    }
+                    break;
+                }
+            }
+            if (!stepFound) {
+                errorMsg = `Step '${targetStepId}' không tồn tại trong các bước trước!`;
+            } else if (!isValidFact) {
+                errorMsg = `Fact '${targetFactName}' không tồn tại trong Step '${targetStepId}'! (Có sẵn: ${availableFacts.join(', ') || 'none'})`;
+            }
+        }
+    } else if (val.startsWith('{{') && val.endsWith('}}')) {
+        // Any other jinja expression with typo in syntax
+        if (!/^\{\{\s*[\w\.\-_\[\]\'\"]+\s*\}\}$/.test(val)) {
+            errorMsg = 'Sai cú pháp Jinja2 (ví dụ đúng: {{ steps.step_id.fact_name }})';
+        }
+    } else if (isRequired && !val) {
         errorMsg = 'This parameter cannot be empty';
     } else if (pattern && val) {
         const regex = new RegExp(pattern);
@@ -2566,6 +2628,7 @@ function initChangeStepOverrides(objectiveName) {
     state.changeStepOverrides = [];
     const bp = state.blueprints.find(b => b.metadata.name === objectiveName);
     if (bp && bp.spec && bp.spec.steps) {
+        const usedSlugs = new Set();
         state.changeStepOverrides = bp.spec.steps.map((s, idx) => {
             const actId = typeof s === 'string' ? s : s.action;
             const act = state.actions.find(a => a.id === actId);
@@ -2575,8 +2638,23 @@ function initChangeStepOverrides(objectiveName) {
                     if (inp.default !== undefined) defaultInputs[inp.name] = inp.default;
                 });
             }
+
+            let baseStepId = '';
+            if (s.stepId && typeof s.stepId === 'string' && s.stepId.trim()) {
+                baseStepId = s.stepId.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            } else {
+                baseStepId = actId.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            }
+            let stepId = baseStepId;
+            let counter = 1;
+            while (usedSlugs.has(stepId)) {
+                stepId = `${baseStepId}_${counter++}`;
+            }
+            usedSlugs.add(stepId);
+
             return {
                 stepIndex: idx + 1,
+                stepId: stepId,
                 action: actId,
                 inputs: { ...defaultInputs, ...(s.inputs || {}) }
             };
@@ -2606,14 +2684,23 @@ function renderChangeStepsOverrideList() {
                     const act = state.actions.find(a => a.id === s.action);
                     const actName = act ? act.name : s.action;
                     const inputs = s.inputs || {};
-                    const tagsHtml = Object.entries(inputs).map(([k, v]) => `
-                        <span class="step-input-tag"><strong>${k}:</strong> ${v}</span>
-                    `).join('');
+                    const tagsHtml = Object.entries(inputs).map(([k, v]) => {
+                        if (typeof v === 'string') {
+                            const m = v.match(/^\{\{\s*steps\.([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_\-]+)\s*\}\}$/);
+                            if (m) {
+                                return `<span class="step-input-tag" style="background: rgba(56, 189, 248, 0.15); border: 1px solid #0284c7; color: #38bdf8;"><strong>${k}:</strong> 🔗 ${m[1]} ➔ ${m[2]}</span>`;
+                            }
+                        }
+                        return `<span class="step-input-tag"><strong>${k}:</strong> ${v}</span>`;
+                    }).join('');
 
                     return `
                         <div style="display: flex; justify-content: space-between; align-items: center; background: #1f2937; padding: 0.5rem 0.75rem; border-radius: 0.375rem; border: 1px solid #374151;">
                             <div style="flex: 1;">
-                                <div style="font-size: 0.82rem; font-weight: 600; color: #f9fafb;">${idx + 1}. ${actName}</div>
+                                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                    <span style="font-size: 0.82rem; font-weight: 600; color: #f9fafb;">${idx + 1}. ${actName}</span>
+                                    <span class="badge" style="background: #1e293b; color: #38bdf8; font-size: 0.65rem; font-family: monospace; border: 1px solid #334155;">ID: ${s.stepId}</span>
+                                </div>
                                 <div style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">${s.action}</div>
                                 ${tagsHtml ? `<div class="step-inputs-summary">${tagsHtml}</div>` : ''}
                             </div>
@@ -2642,34 +2729,119 @@ function openConfigureChangeStepModal(stepIdx) {
         }
     });
 
+    // Collect available facts from all preceding steps (Step 1 to Step stepIdx)
+    const availableFactsByStep = [];
+    for (let pIdx = 0; pIdx < stepIdx; pIdx++) {
+        const prevStep = state.changeStepOverrides[pIdx];
+        if (!prevStep) continue;
+        const prevAction = state.actions.find(a => a.id === prevStep.action);
+        if (!prevAction || !prevAction.outputs || prevAction.outputs.length === 0) continue;
+
+        const stepSlug = prevStep.stepId || (prevAction.id.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+        availableFactsByStep.push({
+            stepIdx: pIdx,
+            stepNum: pIdx + 1,
+            stepId: stepSlug,
+            actionName: prevAction.name,
+            actionId: prevAction.id,
+            outputs: prevAction.outputs
+        });
+    }
+
     const subModal = `
-        <div class="modal-overlay" id="changeStepOverrideOverlay" style="z-index: 1200;">
-            <div class="modal" onclick="event.stopPropagation()" style="max-width: 580px; width: 90%;">
+        <div class="modal-overlay" id="changeStepOverrideOverlay" style="z-index: 1200;" onclick="handleOverlayClick(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 600px; width: 90%;">
                 <div class="modal-header">
                     <div>
-                        <h3 class="modal-title" style="margin: 0; font-size: 1.05rem;">Override Parameters: Action ${stepIdx + 1}</h3>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <h3 class="modal-title" style="margin: 0; font-size: 1.05rem;">Override Parameters: Action ${stepIdx + 1}</h3>
+                            <span class="badge" style="background: #1e293b; color: #38bdf8; font-size: 0.7rem; font-family: monospace; border: 1px solid #334155;">ID: ${step.stepId}</span>
+                        </div>
                         <div style="font-size: 0.75rem; color: #9ca3af;">${action.name} (${step.action})</div>
                     </div>
                     <button class="modal-close" onclick="closeConfigureChangeStepModal()">&times;</button>
                 </div>
-                <div class="modal-body" style="max-height: 55vh; overflow-y: auto;">
+                <div class="modal-body" style="max-height: 58vh; overflow-y: auto;">
+                    ${availableFactsByStep.length > 0 ? `
+                        <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 0.375rem; padding: 0.5rem 0.75rem; margin-bottom: 1rem; font-size: 0.75rem; color: #bae6fd; display: flex; align-items: center; gap: 0.4rem;">
+                            <span>💡</span>
+                            <span>Có <strong>${availableFactsByStep.reduce((acc, s) => acc + s.outputs.length, 0)} Output Facts</strong> từ các bước trước. Bấm nút <strong>🔗 Dùng Fact</strong> để liên kết!</span>
+                        </div>
+                    ` : ''}
+
                     ${(action.inputs || []).map(inp => {
-                        const val = currentInputs[inp.name] !== undefined ? currentInputs[inp.name] : (inp.default || '');
+                        const rawVal = currentInputs[inp.name] !== undefined ? currentInputs[inp.name] : (inp.default || '');
+                        const factMatch = typeof rawVal === 'string' ? rawVal.match(/^\{\{\s*steps\.([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_\-]+)\s*\}\}$/) : null;
+                        const isBound = !!factMatch;
+                        const boundStepId = factMatch ? factMatch[1] : '';
+                        const boundFactName = factMatch ? factMatch[2] : '';
+
                         return `
                             <div style="margin-bottom: 1rem;">
                                 <label class="form-label" style="display: flex; justify-content: space-between;">
                                     <span>${inp.label || inp.name}</span>
                                     <span style="font-size: 0.7rem; color: #9ca3af; font-family: monospace;">{{ ${inp.name} }}</span>
                                 </label>
-                                <input 
-                                    type="${inp.type === 'number' ? 'number' : 'text'}" 
-                                    id="chg_cfg_${inp.name}" 
-                                    class="form-input" 
-                                    value="${val}" 
-                                    placeholder="${inp.placeholder || ''}"
-                                    data-validation="${inp.validation || ''}"
-                                    oninput="validateAntiTypoInput(this)"
-                                >
+
+                                <!-- Tag Pill Mode (Hiển thị khi đã liên kết Fact) -->
+                                <div id="fact_tag_box_${inp.name}" style="display: ${isBound ? 'flex' : 'none'}; align-items: center; justify-content: space-between; background: rgba(56, 189, 248, 0.1); border: 1px solid #0284c7; border-radius: 0.375rem; padding: 0.5rem 0.75rem;">
+                                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                        <span style="font-size: 0.95rem;">🔗</span>
+                                        <div>
+                                            <div style="font-size: 0.8rem; font-weight: 600; color: #38bdf8;">
+                                                <span id="fact_tag_step_${inp.name}">${boundStepId}</span> ➔ <span id="fact_tag_name_${inp.name}" style="color: #f3f4f6;">${boundFactName}</span>
+                                            </div>
+                                            <div style="font-size: 0.68rem; color: #94a3b8;">Nhận giá trị tự động từ kết quả của bước trước</div>
+                                        </div>
+                                    </div>
+                                    <button type="button" onclick="unbindFact('${inp.name}', '${inp.default !== undefined ? inp.default : ''}')" style="background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 0.25rem; cursor: pointer; display: flex; align-items: center; gap: 0.25rem;" title="Hủy liên kết và quay lại nhập tay">
+                                        ✕ Hủy liên kết
+                                    </button>
+                                </div>
+
+                                <!-- Text Input Mode (Hiển thị khi nhập tay bình thường) -->
+                                <div id="fact_input_box_${inp.name}" class="input-fact-wrapper" style="display: ${isBound ? 'none' : 'flex'};">
+                                    <input 
+                                        type="${inp.type === 'number' ? 'number' : 'text'}" 
+                                        id="chg_cfg_${inp.name}" 
+                                        class="form-input" 
+                                        value="${isBound ? (inp.default !== undefined ? inp.default : '') : rawVal}" 
+                                        placeholder="${inp.placeholder || ''}"
+                                        data-validation="${inp.validation || ''}"
+                                        data-input-type="${inp.type || 'string'}"
+                                        data-bound-expr="${isBound ? rawVal : ''}"
+                                        oninput="validateAntiTypoInput(this, ${stepIdx})"
+                                    >
+                                    ${availableFactsByStep.length > 0 ? `
+                                        <button type="button" class="fact-picker-toggle" onclick="toggleFactDropdown('${inp.name}')" title="Chọn Output từ bước trước">
+                                            🔗 Dùng Fact
+                                        </button>
+                                        <div id="fact_dropdown_${inp.name}" class="fact-picker-dropdown" style="display: none;">
+                                            <div class="fact-dropdown-header">
+                                                <span>⚡ Chọn Output từ bước trước</span>
+                                                <span style="font-size: 0.65rem; color: #38bdf8;">1-Click Binding</span>
+                                            </div>
+                                            ${availableFactsByStep.map(s => `
+                                                <div class="fact-step-group">
+                                                    <div class="fact-step-group-title">
+                                                        <span>Step ${s.stepNum}: ${s.actionName}</span>
+                                                        <span class="step-slug">(${s.stepId})</span>
+                                                    </div>
+                                                    ${s.outputs.map(out => `
+                                                        <div class="fact-option-item" onclick="selectFactTag('${inp.name}', '${s.stepId}', '${out.name}')">
+                                                            <div class="fact-option-header">
+                                                                <span class="fact-option-name">${out.name}</span>
+                                                                <span class="fact-option-type">${out.type || 'string'}</span>
+                                                            </div>
+                                                            ${out.description ? `<div class="fact-option-desc">${out.description}</div>` : ''}
+                                                            <div class="fact-option-expr" style="color: #38bdf8; background: rgba(56, 189, 248, 0.1);">🔗 Gán vào [${inp.label || inp.name}]</div>
+                                                        </div>
+                                                    `).join('')}
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
+                                </div>
                                 ${inp.description ? `<div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.25rem;">${inp.description}</div>` : ''}
                                 <div id="cfg_err_${inp.name}" class="validation-error-text" style="display: none;"></div>
                             </div>
@@ -2690,6 +2862,59 @@ function openConfigureChangeStepModal(stepIdx) {
     document.body.appendChild(div);
 }
 
+function selectFactTag(inpName, stepId, factName) {
+    const inputEl = document.getElementById(`chg_cfg_${inpName}`);
+    if (inputEl) {
+        inputEl.dataset.boundExpr = `{{ steps.${stepId}.${factName} }}`;
+        inputEl.classList.remove('input-invalid');
+    }
+    const errEl = document.getElementById(`cfg_err_${inpName}`);
+    if (errEl) errEl.style.display = 'none';
+
+    const tagBox = document.getElementById(`fact_tag_box_${inpName}`);
+    const inputBox = document.getElementById(`fact_input_box_${inpName}`);
+    const tagStep = document.getElementById(`fact_tag_step_${inpName}`);
+    const tagName = document.getElementById(`fact_tag_name_${inpName}`);
+    if (tagStep) tagStep.innerText = stepId;
+    if (tagName) tagName.innerText = factName;
+    if (tagBox && inputBox) {
+        tagBox.style.display = 'flex';
+        inputBox.style.display = 'none';
+    }
+    const dropdown = document.getElementById(`fact_dropdown_${inpName}`);
+    if (dropdown) dropdown.style.display = 'none';
+}
+
+function unbindFact(inpName, defaultVal) {
+    const inputEl = document.getElementById(`chg_cfg_${inpName}`);
+    if (inputEl) {
+        inputEl.dataset.boundExpr = '';
+        if (defaultVal !== undefined && defaultVal !== '') {
+            inputEl.value = defaultVal;
+        }
+    }
+    const tagBox = document.getElementById(`fact_tag_box_${inpName}`);
+    const inputBox = document.getElementById(`fact_input_box_${inpName}`);
+    if (tagBox && inputBox) {
+        tagBox.style.display = 'none';
+        inputBox.style.display = 'flex';
+    }
+}
+
+function toggleFactDropdown(inpName) {
+    const dropdown = document.getElementById(`fact_dropdown_${inpName}`);
+    if (!dropdown) return;
+    const isVisible = dropdown.style.display === 'block';
+    document.querySelectorAll('.fact-picker-dropdown').forEach(d => d.style.display = 'none');
+    dropdown.style.display = isVisible ? 'none' : 'block';
+}
+
+function handleOverlayClick(event) {
+    if (!event.target.closest('.fact-picker-toggle') && !event.target.closest('.fact-picker-dropdown')) {
+        document.querySelectorAll('.fact-picker-dropdown').forEach(d => d.style.display = 'none');
+    }
+}
+
 function closeConfigureChangeStepModal() {
     const el = document.getElementById('changeStepOverrideWrapper');
     if (el) el.remove();
@@ -2706,7 +2931,18 @@ function saveConfigureChangeStepInputs(stepIdx) {
     (action.inputs || []).forEach(inp => {
         const inputEl = document.getElementById(`chg_cfg_${inp.name}`);
         if (inputEl) {
-            newInputs[inp.name] = inp.type === 'number' ? Number(inputEl.value) : inputEl.value.trim();
+            // Check if bound via tag
+            const boundExpr = inputEl.dataset.boundExpr;
+            if (boundExpr && boundExpr.startsWith('{{') && boundExpr.endsWith('}}')) {
+                newInputs[inp.name] = boundExpr;
+            } else {
+                const rawVal = inputEl.value.trim();
+                if (inp.type === 'number') {
+                    newInputs[inp.name] = rawVal === '' ? (inp.default || 0) : Number(rawVal);
+                } else {
+                    newInputs[inp.name] = rawVal;
+                }
+            }
         }
     });
 

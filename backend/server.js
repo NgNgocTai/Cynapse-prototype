@@ -454,6 +454,7 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
       const stepInputs = (override && override.inputs) ? override.inputs : (step.inputs || {});
       return {
         stepIndex: idx + 1,
+        stepId: step.stepId || override?.stepId || (step.action || '').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
         action: step.action,
         name: stepAction ? stepAction.name : `Step ${idx + 1}: ${step.action}`,
         provider: 'ansible',
@@ -537,6 +538,7 @@ async function runOrchestrator(executionId, plan, changeId) {
   // Build per-step overrides from plan.steps
   const stepOverrides = (plan.steps || []).map(s => ({
     stepIndex: s.stepIndex,
+    stepId: s.stepId,
     action: s.action,
     inputs: s.inputs || {}
   }));
