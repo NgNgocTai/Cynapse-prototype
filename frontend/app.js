@@ -10,6 +10,7 @@ const state = {
     changes: [],
     blueprints: [],
     actions: [],
+    credentials: [],
     executions: [],
     executionLog: [],
     auditLog: [],
@@ -26,6 +27,18 @@ async function initApp() {
     initNavigation();
     initRoleSelector();
     
+    // Immediately highlight correct navigation tab matching URL hash before awaiting network
+    const initialHash = window.location.hash.replace(/^#\/?/, '');
+    const initialView = initialHash || sessionStorage.getItem('synapse_current_view') || 'home';
+    const navLinks = document.querySelectorAll('.main-nav a');
+    navLinks.forEach(l => {
+        if (l.dataset.view === initialView) {
+            l.classList.add('active');
+        } else {
+            l.classList.remove('active');
+        }
+    });
+
     // Load data from backend
     await loadInitialData();
     
@@ -45,7 +58,7 @@ async function initApp() {
         state.activeChangeId = savedChangeId;
     }
     
-    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'audit'];
+    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'credentials', 'audit'];
     renderView(validViews.includes(savedView) ? savedView : 'home');
 }
 
@@ -74,6 +87,16 @@ async function loadInitialData() {
         const blueprintsRes = await fetch(`${state.backendUrl}/api/blueprints`);
         if (blueprintsRes.ok) {
             state.blueprints = await blueprintsRes.json();
+        }
+
+        // Load credentials (AWX Architecture)
+        try {
+            const credsRes = await fetch(`${state.backendUrl}/api/credentials`);
+            if (credsRes.ok) {
+                state.credentials = await credsRes.json();
+            }
+        } catch (credErr) {
+            console.warn('Could not load credentials:', credErr);
         }
 
         // Load module schemas for Task Definition Builder
@@ -132,7 +155,7 @@ function initRoleSelector() {
 
 // View Renderer
 function renderView(viewName) {
-    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'audit'];
+    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'credentials', 'audit'];
     if (!validViews.includes(viewName)) {
         viewName = 'home';
     }
@@ -165,6 +188,7 @@ function renderView(viewName) {
         executions: renderExecutionsView,
         blueprints: renderBlueprintsView,
         actions: renderActionsView,
+        credentials: renderCredentialsView,
         audit: renderAuditView
     };
     
@@ -825,6 +849,362 @@ function renderStepper(currentState) {
             }).join('')}
         </div>
     `;
+}
+
+// ============================================================
+// CREDENTIALS VIEW — Red Hat AWX Architecture Vault
+// ============================================================
+function renderCredentialsView() {
+    const machineCount = state.credentials.filter(c => c.type === 'machine').length;
+    const networkCount = state.credentials.filter(c => c.type === 'network').length;
+
+    return `
+        <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <div>
+                <h2 class="card-title" style="margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <span>🔐</span> Credentials Vault
+                </h2>
+                <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">
+                    AWX-style secret management for Machine SSH keys, network device passwords & privilege escalation.
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="openCredentialModal()">+ New Credential</button>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid #1f2937; padding-bottom: 0.75rem;">
+                <div style="font-size: 0.85rem; color: #94a3b8; display: flex; gap: 1.25rem; align-items: center;">
+                    <span>Total: <strong style="color: #60a5fa;">${state.credentials.length}</strong> managed</span>
+                    <span>🖥️ Machine (Linux): <strong style="color: #38bdf8;">${machineCount}</strong></span>
+                    <span>🌐 Network (CLI/API): <strong style="color: #34d399;">${networkCount}</strong></span>
+                </div>
+                <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="loadCredentialsData(true)">↻ Refresh</button>
+            </div>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name / ID</th>
+                        <th>Type</th>
+                        <th>Target User</th>
+                        <th>Authentication</th>
+                        <th>Privilege Escalation</th>
+                        <th>Secret Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${state.credentials.length > 0 ? state.credentials.map(c => `
+                        <tr>
+                            <td>
+                                <div style="font-weight: 600; color: #f3f4f6;">${escapeHtml(c.name)}</div>
+                                <div style="font-size: 0.72rem; color: #6b7280; font-family: monospace;">${escapeHtml(c.id)}</div>
+                                ${c.description ? `<div style="font-size: 0.7rem; color: #9ca3af; margin-top: 0.15rem;">${escapeHtml(c.description)}</div>` : ''}
+                            </td>
+                            <td>
+                                ${c.type === 'machine' 
+                                    ? `<span class="badge-machine">🖥️ Machine</span>` 
+                                    : `<span class="badge-network">🌐 Network</span>`}
+                            </td>
+                            <td>
+                                <code style="color: #93c5fd; background: rgba(59,130,246,0.1); padding: 0.15rem 0.4rem; border-radius: 0.25rem; font-size: 0.8rem;">${escapeHtml(c.username)}</code>
+                            </td>
+                            <td>
+                                ${c.type === 'machine' ? (
+                                    c.authType === 'ssh_key' 
+                                        ? `<span class="key-path-badge" title="WSL Native Key Path">🔑 ${escapeHtml(c.sshKeyPath || '~/.ssh/id_rsa')}</span>`
+                                        : `<span class="auth-method-tag">🔒 Password</span>`
+                                ) : `<span class="auth-method-tag">🔒 Device Password</span>`}
+                            </td>
+                            <td>
+                                ${c.type === 'machine' 
+                                    ? `<span style="font-size: 0.78rem; color: ${c.hasBecomePassword ? '#34d399' : '#9ca3af'};">${escapeHtml(c.becomeMethod || 'sudo')} (${c.hasBecomePassword ? 'Password Set ✓' : 'NOPASSWD'})</span>`
+                                    : `<span style="font-size: 0.78rem; color: ${c.hasEnablePassword ? '#34d399' : '#9ca3af'};">Enable Secret (${c.hasEnablePassword ? 'Configured ✓' : 'None'})</span>`}
+                            </td>
+                            <td>
+                                ${c.hasPassword || c.hasSshKey 
+                                    ? `<span class="secret-mask">••••••••</span>` 
+                                    : `<span style="color: #f87171; font-size: 0.75rem;">No secret</span>`}
+                            </td>
+                            <td style="white-space: nowrap;">
+                                <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.35rem;" onclick="openCredentialModal('${c.id}')" title="Edit Credential">✏️ Edit</button>
+                                <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; color: #f87171;" onclick="deleteCredentialConfirm('${c.id}')" title="Delete Credential">🗑️</button>
+                            </td>
+                        </tr>
+                    `).join('') : `
+                        <tr>
+                            <td colspan="7" style="text-align: center; color: #9ca3af; padding: 2.5rem;">
+                                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🔐</div>
+                                <div style="font-weight: 500; color: #e4e4e7;">No credentials configured yet</div>
+                                <div style="font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem;">Click "+ New Credential" to configure machine SSH keys or network secrets.</div>
+                            </td>
+                        </tr>
+                    `}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function loadCredentialsData(forceRender = false) {
+    try {
+        const res = await fetch(`${state.backendUrl}/api/credentials`);
+        if (res.ok) {
+            state.credentials = await res.json();
+            if (forceRender && state.currentView === 'credentials') {
+                renderView('credentials');
+            }
+        }
+    } catch (err) {
+        console.error('Error reloading credentials:', err);
+    }
+}
+
+function renderCredDynamicFields(type, authType, cred = null) {
+    if (type === 'machine') {
+        return `
+            <div style="margin-bottom: 1rem;">
+                <label class="form-label">Authentication Method</label>
+                <div style="display: flex; gap: 1.5rem; margin-top: 0.35rem;">
+                    <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; color: #e4e4e7;">
+                        <input type="radio" name="credAuthType" value="ssh_key" ${authType === 'ssh_key' ? 'checked' : ''} onchange="onCredAuthTypeSelect(this.value)">
+                        <span>🔑 SSH Private Key (File Path)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; color: #e4e4e7;">
+                        <input type="radio" name="credAuthType" value="password" ${authType === 'password' ? 'checked' : ''} onchange="onCredAuthTypeSelect(this.value)">
+                        <span>🔒 SSH Password</span>
+                    </label>
+                </div>
+            </div>
+
+            ${authType === 'ssh_key' ? `
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">SSH Key Path (in Linux / WSL) *</label>
+                    <input type="text" id="credSshKeyPathInput" class="form-input" placeholder="~/.ssh/id_rsa or /home/user/.ssh/id_rsa" value="${cred ? escapeHtml(cred.sshKeyPath || '~/.ssh/id_rsa') : '~/.ssh/id_rsa'}">
+                    <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Native Linux path in WSL — avoids NTFS permissions issues.</div>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">Or Paste Private Key (Optional PEM)</label>
+                    <textarea id="credSshKeyDataInput" class="form-input" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                    <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">${cred && cred.hasSshKey ? '✓ SSH Key already saved. Leave blank to keep existing.' : 'If provided, written to secure 0600 temp file and deleted on finish.'}</div>
+                </div>
+            ` : `
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">SSH Password *</label>
+                    <input type="password" id="credPasswordInput" class="form-input" placeholder="${cred && cred.hasPassword ? 'Leave blank to keep existing password' : 'Enter SSH password'}">
+                </div>
+            `}
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <div>
+                    <label class="form-label">Privilege Escalation Method</label>
+                    <select id="credBecomeMethodInput" class="form-input">
+                        <option value="sudo" ${cred && cred.becomeMethod === 'sudo' ? 'selected' : ''}>sudo</option>
+                        <option value="su" ${cred && cred.becomeMethod === 'su' ? 'selected' : ''}>su</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Privilege Password (sudo)</label>
+                    <input type="password" id="credBecomePasswordInput" class="form-input" placeholder="${cred && cred.hasBecomePassword ? 'Leave blank to keep existing' : 'Optional sudo password'}">
+                </div>
+            </div>
+        `;
+    } else {
+        // Network Device
+        return `
+            <div style="margin-bottom: 1rem;">
+                <label class="form-label">Device SSH / Console Password *</label>
+                <input type="password" id="credPasswordInput" class="form-input" placeholder="${cred && cred.hasPassword ? 'Leave blank to keep existing password' : 'Enter device password'}">
+                <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Used for Cisco IOS-XE, Huawei VRP, or Juniper Junos network_cli connection.</div>
+            </div>
+
+            <div style="margin-bottom: 1rem;">
+                <label class="form-label">Enable Secret / Privilege Password</label>
+                <input type="password" id="credEnablePasswordInput" class="form-input" placeholder="${cred && cred.hasEnablePassword ? 'Leave blank to keep existing' : 'Optional enable secret'}">
+                <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">Passed to Ansible become_method: enable for privileged mode (#).</div>
+            </div>
+        `;
+    }
+}
+
+function onCredTypeSelect(newType) {
+    const container = document.getElementById('credDynamicFields');
+    if (container) {
+        container.innerHTML = renderCredDynamicFields(newType, 'ssh_key', null);
+    }
+}
+
+function onCredAuthTypeSelect(newAuthType) {
+    const type = document.getElementById('credTypeInput')?.value || 'machine';
+    const container = document.getElementById('credDynamicFields');
+    if (container) {
+        container.innerHTML = renderCredDynamicFields(type, newAuthType, null);
+    }
+}
+
+function openCredentialModal(credId = null) {
+    const cred = credId ? state.credentials.find(c => c.id === credId) : null;
+    const isEdit = Boolean(cred);
+    const initialType = cred ? cred.type : 'machine';
+    const initialAuthType = cred ? (cred.authType || 'ssh_key') : 'ssh_key';
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 620px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.35rem;">🔐</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0;">${isEdit ? 'Edit Credential' : 'New Credential'}</h2>
+                            <div style="font-size: 0.78rem; color: #9ca3af;">Red Hat AWX-compatible credential vault</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    ${isEdit ? `
+                        <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 0.375rem; padding: 0.65rem 0.85rem; margin-bottom: 1rem; font-size: 0.78rem; color: #93c5fd;">
+                            ℹ️ <strong>Rule 6 (AWX Security):</strong> Leave password or secret fields empty to keep existing saved credentials.
+                        </div>
+                    ` : ''}
+
+                    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <label class="form-label">Credential Name *</label>
+                            <input type="text" id="credNameInput" class="form-input" placeholder="e.g. DB01 Server SSH or Cisco Core Switch" value="${cred ? escapeHtml(cred.name) : ''}">
+                        </div>
+                        <div>
+                            <label class="form-label">Type *</label>
+                            <select id="credTypeInput" class="form-input" onchange="onCredTypeSelect(this.value)" ${isEdit ? 'disabled' : ''}>
+                                <option value="machine" ${initialType === 'machine' ? 'selected' : ''}>🖥️ Machine (SSH)</option>
+                                <option value="network" ${initialType === 'network' ? 'selected' : ''}>🌐 Network (CLI/API)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Description</label>
+                        <input type="text" id="credDescInput" class="form-input" placeholder="Notes on usage or target hosts" value="${cred ? escapeHtml(cred.description || '') : ''}">
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Username *</label>
+                        <input type="text" id="credUsernameInput" class="form-input" placeholder="e.g. tai, root, developer, admin" value="${cred ? escapeHtml(cred.username) : ''}">
+                        <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">SSH or Device Administrative User</div>
+                    </div>
+
+                    <!-- Dynamic Fields Container -->
+                    <div id="credDynamicFields">
+                        ${renderCredDynamicFields(initialType, initialAuthType, cred)}
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="submitCredentialModal('${credId || ''}')">${isEdit ? 'Save Changes' : 'Create Credential'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function submitCredentialModal(credId = '') {
+    const isEdit = Boolean(credId);
+    const name = document.getElementById('credNameInput')?.value?.trim();
+    const type = document.getElementById('credTypeInput')?.value || 'machine';
+    const description = document.getElementById('credDescInput')?.value?.trim() || '';
+    const username = document.getElementById('credUsernameInput')?.value?.trim();
+
+    if (!name || !username) {
+        alert('Please fill in Credential Name and Username.');
+        return;
+    }
+
+    const payload = {
+        name,
+        type,
+        description,
+        username
+    };
+
+    if (type === 'machine') {
+        const authTypeRadio = document.querySelector('input[name="credAuthType"]:checked');
+        const authType = authTypeRadio ? authTypeRadio.value : 'ssh_key';
+        payload.authType = authType;
+
+        if (authType === 'ssh_key') {
+            payload.sshKeyPath = document.getElementById('credSshKeyPathInput')?.value?.trim() || '~/.ssh/id_rsa';
+            const sshKeyData = document.getElementById('credSshKeyDataInput')?.value?.trim();
+            if (sshKeyData) payload.sshKeyData = sshKeyData;
+        } else {
+            const password = document.getElementById('credPasswordInput')?.value;
+            if (password) payload.password = password;
+        }
+
+        payload.becomeMethod = document.getElementById('credBecomeMethodInput')?.value || 'sudo';
+        const becomePass = document.getElementById('credBecomePasswordInput')?.value;
+        if (becomePass) payload.becomePassword = becomePass;
+    } else {
+        // Network
+        const password = document.getElementById('credPasswordInput')?.value;
+        if (password) payload.password = password;
+        const enablePassword = document.getElementById('credEnablePasswordInput')?.value;
+        if (enablePassword) payload.enablePassword = enablePassword;
+    }
+
+    try {
+        const url = isEdit ? `${state.backendUrl}/api/credentials/${credId}` : `${state.backendUrl}/api/credentials`;
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            alert('Failed to save credential: ' + (errData.error || errData.errors?.join('; ') || res.statusText));
+            return;
+        }
+
+        const savedCred = await res.json();
+        if (isEdit) {
+            const idx = state.credentials.findIndex(c => c.id === credId);
+            if (idx !== -1) state.credentials[idx] = savedCred;
+        } else {
+            state.credentials.push(savedCred);
+        }
+
+        closeModal();
+        renderView('credentials');
+    } catch (err) {
+        console.error('Save credential error:', err);
+        alert('Error saving credential: ' + err.message);
+    }
+}
+
+async function deleteCredentialConfirm(credId) {
+    const cred = state.credentials.find(c => c.id === credId);
+    const name = cred ? cred.name : credId;
+    if (!confirm(`Are you sure you want to delete credential "${name}"?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/credentials/${credId}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) {
+            alert('Failed to delete credential');
+            return;
+        }
+        state.credentials = state.credentials.filter(c => c.id !== credId);
+        renderView('credentials');
+    } catch (err) {
+        console.error('Delete credential error:', err);
+        alert('Error deleting credential: ' + err.message);
+    }
 }
 
 // ============================================================
@@ -2658,6 +3038,21 @@ function openNewChangeModal(selectedObjective = null) {
                     </div>
 
                     <div style="margin-bottom: 1rem;">
+                        <label class="form-label">Execution Credential (AWX Vault)</label>
+                        <select id="credentialInput" class="form-input">
+                            <option value="">-- None / Default Environment SSH Key --</option>
+                            ${state.credentials.map(c => `
+                                <option value="${c.id}" ${c.id === 'cred-db01' ? 'selected' : ''}>
+                                    [${c.type.toUpperCase()}] ${escapeHtml(c.name)} (${c.username}${c.authType === 'ssh_key' ? ' • Key: ' + (c.sshKeyPath || '~/.ssh/id_rsa') : ' • Password'})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div style="font-size: 0.72rem; color: #9ca3af; margin-top: 0.2rem;">
+                            Managed credentials injected dynamically at runtime via secure <code>0600</code> vars file and masked with <code>no_log: true</code>.
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 1rem;">
                         <label style="display: flex; align-items: center; gap: 0.5rem; color: #d1d5db;">
                             <input type="checkbox" id="maintenanceWindowInput" style="width: auto;">
                             <span>Maintenance Window Approved</span>
@@ -3129,6 +3524,7 @@ async function createChange() {
     const objective = document.getElementById('objectiveInput').value;
     const target = document.getElementById('targetInput').value;
     const domain = document.getElementById('domainInput').value;
+    const credentialId = document.getElementById('credentialInput')?.value || null;
     const maintenanceWindow = document.getElementById('maintenanceWindowInput').checked;
 
     if (!objective || !target) {
@@ -3144,6 +3540,7 @@ async function createChange() {
                 objective, 
                 target, 
                 domain,
+                credentialId: credentialId || undefined,
                 constraints: { maintenanceWindow },
                 stepOverrides: state.changeStepOverrides || []
             })
@@ -3200,6 +3597,12 @@ function viewChangeDetail(changeId) {
                             <div style="color: #9ca3af; font-size: 0.875rem;">Domain</div>
                             <div style="margin-top: 0.25rem;"><span class="badge badge-info">${change.domain}</span></div>
                         </div>
+                        ${change.credentialId ? `
+                        <div>
+                            <div style="color: #9ca3af; font-size: 0.875rem;">Credential (Vault)</div>
+                            <div style="margin-top: 0.25rem;"><span class="badge badge-success" style="background: rgba(16,185,129,0.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.3);">🔐 ${escapeHtml(state.credentials.find(c => c.id === change.credentialId)?.name || change.credentialId)}</span></div>
+                        </div>
+                        ` : ''}
                         ${change.riskScore ? `
                         <div>
                             <div style="color: #9ca3af; font-size: 0.875rem;">Risk Score</div>

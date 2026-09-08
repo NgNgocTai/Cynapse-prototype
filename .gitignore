@@ -2,3 +2,9 @@ node_modules/
 .env
 .DS_Store
 *.log
+
+# Synapse Credentials & Runtime Secrets
+backend/credentials.json
+backend/tmp/
+*.pem
+*.key

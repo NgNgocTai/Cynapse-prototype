@@ -13,6 +13,9 @@ import {
   listBlueprints, getBlueprint, addBlueprint, updateBlueprint, deleteBlueprint
 } from './catalogStore.js';
 import {
+  listCredentials, getCredential, addCredential, updateCredential, deleteCredential, getCredentialSecrets
+} from './credentialStore.js';
+import {
   getPlaybookSource,
   getAvailableTemplates,
   getTemplate,
@@ -324,6 +327,55 @@ app.get('/api/blueprints/:name/yaml', (req, res) => {
 });
 
 // ===========================
+// CREDENTIALS CRUD (AWX Architecture)
+// ===========================
+
+// GET /api/credentials - List all credentials (sanitized)
+app.get('/api/credentials', (req, res) => {
+  res.json(listCredentials());
+});
+
+// GET /api/credentials/:id - Get single credential (sanitized)
+app.get('/api/credentials/:id', (req, res) => {
+  const cred = getCredential(req.params.id);
+  if (!cred) return res.status(404).json({ error: 'Credential not found' });
+  res.json(cred);
+});
+
+// POST /api/credentials - Create new credential
+app.post('/api/credentials', (req, res) => {
+  const result = addCredential(req.body);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.errors.join('; ') });
+  }
+  writeAudit('Credential', result.credential.id, 'user', 'created', 'success',
+    `Credential "${result.credential.name}" (${result.credential.type.toUpperCase()}) created`);
+  res.status(201).json(result.credential);
+});
+
+// PUT /api/credentials/:id - Update credential (Rule: blank secret = keep existing)
+app.put('/api/credentials/:id', (req, res) => {
+  const result = updateCredential(req.params.id, req.body);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.errors.join('; ') });
+  }
+  writeAudit('Credential', req.params.id, 'user', 'updated', 'success',
+    `Credential "${result.credential.name}" updated`);
+  res.json(result.credential);
+});
+
+// DELETE /api/credentials/:id - Delete credential
+app.delete('/api/credentials/:id', (req, res) => {
+  const result = deleteCredential(req.params.id);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  writeAudit('Credential', req.params.id, 'user', 'deleted', 'success',
+    `Credential ${req.params.id} deleted`);
+  res.json({ message: `Credential ${req.params.id} deleted` });
+});
+
+// ===========================
 // CHANGES
 // ===========================
 
@@ -338,6 +390,7 @@ app.post('/api/changes', (req, res) => {
   const objective = req.body.objective || req.body.blueprintName || req.body.action || '';
   const target = req.body.target || req.body.targetHost || 'db_servers';
   const domain = req.body.domain || 'CNTT';
+  const credentialId = req.body.credentialId || null;
   const constraints = req.body.constraints || {};
   let stepOverrides = req.body.stepOverrides || [];
   if (!Array.isArray(stepOverrides) && req.body.actionOverrides) {
@@ -353,6 +406,7 @@ app.post('/api/changes', (req, res) => {
     objective,
     target,
     domain,
+    credentialId,
     constraints,
     stepOverrides,
     riskScore: null,
@@ -561,6 +615,45 @@ async function runOrchestrator(executionId, plan, changeId) {
     const stepId = sOverride?.stepId || sBp?.stepId;
     if (stepId) {
       extraVars[stepId] = stepInputs;
+    }
+  }
+
+  // 2.1 Inject Managed Credential (AWX Architecture)
+  if (change.credentialId) {
+    const credSecrets = getCredentialSecrets(change.credentialId);
+    if (credSecrets) {
+      execution.logTail += `[ORCHESTRATOR] Attached Credential: "${credSecrets.name}" (${credSecrets.type.toUpperCase()})\n`;
+      if (credSecrets.username) {
+        extraVars.ansible_user = credSecrets.username;
+      }
+      if (credSecrets.type === 'machine') {
+        if (credSecrets.authType === 'ssh_key') {
+          if (credSecrets.sshKeyPath) {
+            extraVars.ansible_ssh_private_key_file = credSecrets.sshKeyPath;
+          }
+          if (credSecrets.sshKeyData) {
+            extraVars.ssh_key_data = credSecrets.sshKeyData;
+          }
+        } else if (credSecrets.password) {
+          extraVars.ansible_password = credSecrets.password;
+        }
+        const becomePass = credSecrets.becomePassword || credSecrets.password;
+        if (becomePass) {
+          extraVars.ansible_become_method = credSecrets.becomeMethod || 'sudo';
+          extraVars.ansible_become_password = becomePass;
+        }
+      } else if (credSecrets.type === 'network') {
+        if (credSecrets.password) {
+          extraVars.ansible_password = credSecrets.password;
+        }
+        if (credSecrets.enablePassword) {
+          extraVars.ansible_become = 'yes';
+          extraVars.ansible_become_method = 'enable';
+          extraVars.ansible_become_password = credSecrets.enablePassword;
+        }
+      }
+    } else {
+      execution.logTail += `[ORCHESTRATOR] Warning: Credential "${change.credentialId}" not found in store.\n`;
     }
   }
 

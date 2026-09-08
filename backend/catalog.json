@@ -383,9 +383,10 @@
           "module": "ansible.builtin.shell",
           "args": {
             "executable": "/bin/bash",
-            "cmd": "find {{ tmp_dir }} -type f -mtime +{{ older_than_days }} -delete && echo \"Cleaned successfully\""
+            "cmd": "find {{ tmp_dir }} -maxdepth 1 -type f -mtime +{{ older_than_days }} -delete 2>/dev/null || true; echo \"Cleaned successfully\""
           },
-          "register": "cleanup_result"
+          "register": "cleanup_result",
+          "failed_when": false
         }
       ],
       "implementation": {

@@ -14,7 +14,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * 3. 'SIMULATED' (development fallback)
  */
 export function detectAnsibleEnvironment() {
-  // Check native CLI
+  // Check explicit environment override (ANSIBLE_MODE=real|simulated)
+  const forcedMode = process.env.ANSIBLE_MODE?.toLowerCase();
+  if (forcedMode === 'simulated') {
+    return { type: 'simulated', command: null, note: 'Configured via ANSIBLE_MODE=simulated' };
+  }
+
+  // 1. Check native CLI
   try {
     const cmd = os.platform() === 'win32' ? 'where ansible-playbook' : 'which ansible-playbook';
     execSync(cmd, { stdio: 'ignore' });
@@ -23,8 +29,22 @@ export function detectAnsibleEnvironment() {
     // not found
   }
 
-  // Check WSL CLI on Windows
+  // 2. Check WSL CLI on Windows (specifically check user's Ubuntu .venv)
   if (os.platform() === 'win32') {
+    try {
+      execSync('wsl -d Ubuntu -u ngoctai /home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook --version', { stdio: 'ignore' });
+      return { 
+        type: 'wsl', 
+        command: 'wsl -d Ubuntu -u ngoctai /home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook',
+        ansibleBin: '/home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook',
+        distro: 'Ubuntu',
+        user: 'ngoctai',
+        inventory: '/home/ngoctai/projects/SYNAPSE/service-automation/inventory.ini'
+      };
+    } catch (e) {
+      // not found in specific venv
+    }
+
     try {
       execSync('wsl which ansible-playbook', { stdio: 'ignore' });
       return { type: 'wsl', command: 'wsl ansible-playbook' };
@@ -63,7 +83,7 @@ export async function runAnsiblePlaybook({
   onStepProgress = () => {}
 }) {
   const env = detectAnsibleEnvironment();
-  const tmpDir = path.join(__dirname, 'tmp');
+  const tmpDir = path.join(os.tmpdir(), 'synapse_ansible');
   if (!fs.existsSync(tmpDir)) {
     fs.mkdirSync(tmpDir, { recursive: true });
   }
@@ -71,6 +91,17 @@ export async function runAnsiblePlaybook({
   const safeId = executionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   const playbookPath = path.join(tmpDir, `playbook_${safeId}.yml`);
   const varsPath = path.join(tmpDir, `vars_${safeId}.json`);
+  let keyPath = null;
+
+  // Path handling for WSL if needed
+  const toWslPath = (winPath) => {
+    const full = path.resolve(winPath).replace(/\\/g, '/');
+    const match = full.match(/^([A-Za-z]):\/(.*)/);
+    if (match) {
+      return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
+    }
+    return full;
+  };
 
   let fullLog = '';
   const appendLog = (text) => {
@@ -96,14 +127,21 @@ export async function runAnsiblePlaybook({
     // 1. Write Playbook YAML
     fs.writeFileSync(playbookPath, playbookContent, 'utf-8');
 
-    // 2. Write Extra Vars securely (mode 0600)
+    // 2. Handle raw SSH Key if provided via Credentials (mode 0600)
+    if (extraVars.ssh_key_data) {
+      keyPath = path.join(tmpDir, `key_${safeId}.pem`);
+      fs.writeFileSync(keyPath, extraVars.ssh_key_data, { encoding: 'utf-8', mode: 0o600 });
+      delete extraVars.ssh_key_data;
+      extraVars.ansible_ssh_private_key_file = env.type === 'wsl' ? toWslPath(keyPath) : keyPath;
+    }
+
+    // 3. Write Extra Vars securely (mode 0600)
     fs.writeFileSync(varsPath, JSON.stringify(extraVars, null, 2), {
       encoding: 'utf-8',
       mode: 0o600
     });
 
-    // 3. Build command args
-    // Path handling for WSL if needed
+    // 4. Build command args
     let effectivePlaybookPath = playbookPath;
     let effectiveVarsPath = varsPath;
 
@@ -112,23 +150,18 @@ export async function runAnsiblePlaybook({
 
     if (env.type === 'wsl') {
       bin = 'wsl';
-      // Convert Windows paths to WSL paths
-      const toWslPath = (winPath) => {
-        const full = path.resolve(winPath).replace(/\\/g, '/');
-        const match = full.match(/^([A-Za-z]):\/(.*)/);
-        if (match) {
-          return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
-        }
-        return full;
-      };
-
       effectivePlaybookPath = toWslPath(playbookPath);
       effectiveVarsPath = toWslPath(varsPath);
 
+      const ansibleExecutable = env.ansibleBin || 'ansible-playbook';
+      const wslPrefix = env.distro ? ['-d', env.distro, '-u', env.user || 'ngoctai'] : [];
+      const inventoryArg = env.inventory ? ['-i', env.inventory] : ['-i', `${targetHosts},`];
+
       args = [
-        'ansible-playbook',
+        ...wslPrefix,
+        ansibleExecutable,
         effectivePlaybookPath,
-        '-i', `${targetHosts},`,
+        ...inventoryArg,
         '--extra-vars', `@${effectiveVarsPath}`
       ];
     } else {
@@ -139,7 +172,7 @@ export async function runAnsiblePlaybook({
       ];
     }
 
-    appendLog(`[ANSIBLE RUNNER] Command: ${bin} ${args.slice(0, 3).join(' ')} --extra-vars @<secure_temp_file>`);
+    appendLog(`[ANSIBLE RUNNER] Command: ${bin} ${args.slice(0, 4).join(' ')} ... --extra-vars @<secure_temp_file>`);
 
     // 4. Spawn child process
     const child = spawn(bin, args, {
@@ -155,18 +188,15 @@ export async function runAnsiblePlaybook({
         if (!line.trim()) continue;
         appendLog(line);
 
-        // Detect Step transitions
-        if (line.includes('PLAY [Action 1:')) {
-          currentStep = 0;
-          onStepProgress(0, 'RUNNING');
-        } else if (line.includes('PLAY [Action 2:')) {
-          onStepProgress(0, 'SUCCESS');
-          currentStep = 1;
-          onStepProgress(1, 'RUNNING');
-        } else if (line.includes('PLAY [Action 3:')) {
-          onStepProgress(1, 'SUCCESS');
-          currentStep = 2;
-          onStepProgress(2, 'RUNNING');
+        // Detect Step transitions dynamically (matches Step 1, Step 2... or Action 1, Action 2...)
+        const stepMatch = line.match(/PLAY \[(?:Step|Action) (\d+):/i);
+        if (stepMatch) {
+          const stepNum = parseInt(stepMatch[1], 10) - 1;
+          if (stepNum > 0 && currentStep < stepNum) {
+            onStepProgress(currentStep, 'SUCCESS');
+          }
+          currentStep = stepNum;
+          onStepProgress(currentStep, 'RUNNING');
         }
       }
     });
@@ -203,8 +233,9 @@ export async function runAnsiblePlaybook({
   } finally {
     // 5. Secure Cleanup: Guarantee deletion of temp credentials & playbook
     try {
-      if (fs.existsSync(varsPath)) fs.unlinkSync(varsPath);
-      if (fs.existsSync(playbookPath)) fs.unlinkSync(playbookPath);
+      if (varsPath && fs.existsSync(varsPath)) fs.unlinkSync(varsPath);
+      if (playbookPath && fs.existsSync(playbookPath)) fs.unlinkSync(playbookPath);
+      if (keyPath && fs.existsSync(keyPath)) fs.unlinkSync(keyPath);
     } catch (cleanErr) {
       console.warn('[ANSIBLE RUNNER] Cleanup warning:', cleanErr.message);
     }

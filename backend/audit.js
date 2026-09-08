@@ -1,9 +1,10 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AUDIT_FILE = path.join(__dirname, 'audit.log');
+const AUDIT_FILE = path.join(os.tmpdir(), 'synapse_audit.log');
 
 // Khởi tạo file nếu chưa có
 if (!fs.existsSync(AUDIT_FILE)) {

@@ -1,10 +1,13 @@
 {
   "liveServer.settings.ignoreFiles": [
     "**/backend/**",
+    "backend/**",
     "**/.git/**",
     "**/*.log",
     "**/*.json",
     "**/*.yml",
-    "**/*.yaml"
-  ]
+    "**/*.yaml",
+    "**/*.tmp"
+  ],
+  "liveServer.settings.wait": 1000
 }

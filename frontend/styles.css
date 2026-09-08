@@ -783,6 +783,11 @@ select:hover {
     50% { opacity: 0.5; }
 }
 
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 .pulse {
     animation: pulse 2s infinite;
 }
@@ -1385,5 +1390,85 @@ select:hover {
     padding: 0.1rem 0.3rem;
     border-radius: 0.2rem;
     margin-top: 0.15rem;
+}
+
+/* ============================================================
+   CREDENTIALS VIEW & MANAGEMENT STYLES (AWX Architecture)
+   ============================================================ */
+
+.badge-machine {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.badge-network {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.secret-mask {
+    font-family: monospace;
+    letter-spacing: 2px;
+    color: #9ca3af;
+    background: #1e293b;
+    padding: 0.15rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.8rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.key-path-badge {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.75rem;
+    color: #cbd5e1;
+    background: #1e293b;
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.25rem;
+    border: 1px solid #334155;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.auth-method-tag {
+    font-size: 0.72rem;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.25rem;
+    background: #374151;
+    color: #f3f4f6;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.cred-card {
+    background: #161e2e;
+    border: 1px solid #1f2937;
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+    transition: all 0.2s ease;
+}
+
+.cred-card:hover {
+    border-color: #38bdf8;
+    box-shadow: 0 4px 20px -2px rgba(56, 189, 248, 0.15);
 }
 
