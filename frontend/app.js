@@ -29,7 +29,24 @@ async function initApp() {
     // Load data from backend
     await loadInitialData();
     
-    renderView('home');
+    // Listen to hash changes for browser back/forward buttons
+    window.addEventListener('hashchange', () => {
+        const hash = window.location.hash.replace(/^#\/?/, '');
+        if (hash && hash !== state.currentView) {
+            renderView(hash);
+        }
+    });
+
+    // Restore view from URL hash or sessionStorage, defaulting to 'home'
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    const savedView = hash || sessionStorage.getItem('synapse_current_view') || 'home';
+    const savedChangeId = sessionStorage.getItem('synapse_active_change_id');
+    if (savedChangeId && state.changes.some(c => c.id === savedChangeId)) {
+        state.activeChangeId = savedChangeId;
+    }
+    
+    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'audit'];
+    renderView(validViews.includes(savedView) ? savedView : 'home');
 }
 
 if (document.readyState === 'loading') {
@@ -87,12 +104,6 @@ function initNavigation() {
         link.addEventListener('click', (e) => {
             e.preventDefault();
             const view = link.dataset.view;
-            
-            // Update active state
-            navLinks.forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-            
-            // Render view
             renderView(view);
         });
     });
@@ -121,7 +132,31 @@ function initRoleSelector() {
 
 // View Renderer
 function renderView(viewName) {
+    const validViews = ['home', 'changes', 'executions', 'blueprints', 'actions', 'audit'];
+    if (!validViews.includes(viewName)) {
+        viewName = 'home';
+    }
+
     state.currentView = viewName;
+    sessionStorage.setItem('synapse_current_view', viewName);
+    if (state.activeChangeId) {
+        sessionStorage.setItem('synapse_active_change_id', state.activeChangeId);
+    }
+    
+    if (window.location.hash !== `#${viewName}`) {
+        history.replaceState(null, '', `#${viewName}`);
+    }
+
+    // Sync sidebar navigation active state
+    const navLinks = document.querySelectorAll('.main-nav a');
+    navLinks.forEach(l => {
+        if (l.dataset.view === viewName) {
+            l.classList.add('active');
+        } else {
+            l.classList.remove('active');
+        }
+    });
+
     const mainContent = document.getElementById('mainContent');
     
     const views = {
@@ -469,10 +504,10 @@ function renderChangesView() {
                                 ${change.state === 'Draft' ? `<button class="btn btn-primary" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="assessChange('${change.id}')">Assess</button>` : ''}
                                 ${change.state === 'Assessed' && change.policyResult === 'APPROVAL' ? `<button class="btn btn-success" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="approveChange('${change.id}')">✓ Approve</button>` : ''}
                                 ${change.state === 'Assessed' && change.policyResult === 'AUTO_APPROVE' ? `<button class="btn btn-success" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="approveChange('${change.id}')">✓ Approve</button>` : ''}
-                                ${change.state === 'Approved' ? `<button class="btn btn-success" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="executeChange('${change.id}')">▶ Execute</button>` : ''}
-                                ${change.state === 'Executing' ? `<button class="btn btn-primary" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="executeChange('${change.id}')">📡 Monitor</button>` : ''}
-                                ${change.state === 'Verified' ? `<span class="badge badge-success">✓ Done</span>` : ''}
-                                ${change.state === 'Failed' ? `<span class="badge badge-danger">✗ Failed</span>` : ''}
+                                ${change.state === 'Approved' ? `<button class="btn btn-success" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; font-weight: 600;" onclick="executeChange('${change.id}', true)">▶ Execute</button>` : ''}
+                                ${change.state === 'Executing' ? `<button class="btn btn-primary" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;" onclick="executeChange('${change.id}', false)">📡 Monitor</button>` : ''}
+                                ${change.state === 'Verified' ? `<button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="executeChange('${change.id}', false)" title="View execution log and results">👁 View Run</button>` : ''}
+                                ${change.state === 'Failed' ? `<button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem; color: #f87171;" onclick="executeChange('${change.id}', false)" title="View execution failure log">👁 View Run</button>` : ''}
                                 ${change.state === 'Blocked' ? `<span class="badge badge-danger">🚫 Blocked</span>` : ''}
                                 <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.7rem;" onclick="viewChangeDetail('${change.id}')">···</button>
                             </td>
@@ -516,9 +551,20 @@ function renderExecutionsView() {
     }
 
     return `
-        <div class="view-header">
-            <h2 class="card-title">Execution — ${change.id}</h2>
-            <div style="display: flex; gap: 0.75rem; align-items: center;">
+        <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                <h2 class="card-title" style="margin: 0;">Execution — ${change.id}</h2>
+                ${state.changes.length > 1 ? `
+                    <select id="changeExecutionSelector" style="background: #1f2937; color: #f3f4f6; border: 1px solid #374151; border-radius: 0.375rem; padding: 0.35rem 0.65rem; font-size: 0.85rem; cursor: pointer;" onchange="switchExecutionChange(this.value)">
+                        ${state.changes.map(c => `
+                            <option value="${c.id}" ${c.id === change.id ? 'selected' : ''}>
+                                ${c.id} [${c.state}] — ${c.objective}
+                            </option>
+                        `).join('')}
+                    </select>
+                ` : ''}
+            </div>
+            <div class="execution-actions" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
                 ${needsApproval ? `<button class="btn btn-primary" onclick="approveChange('${change.id}')">✓ Approve</button>` : ''}
                 ${canExecute ? `<button class="btn btn-success" onclick="runExecution('${change.id}')">▶ Run Execution</button>` : ''}
                 ${(change.state === 'Verified' || change.state === 'Failed') ? `
@@ -543,7 +589,7 @@ function renderExecutionsView() {
                 <div class="card" style="margin-bottom: 1.5rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                         <h3 class="card-title">Change Details</h3>
-                        <span class="badge badge-${getStateColor(change.state)}">${change.state}</span>
+                        <span id="changeDetailsStateBadge" class="badge badge-${getStateColor(change.state)}">${change.state}</span>
                     </div>
                     <div style="font-size: 0.875rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
                         <div><span style="color: #9ca3af;">Objective:</span> <code>${change.objective}</code></div>
@@ -1737,14 +1783,16 @@ async function openBlueprintDetailModal(bpName) {
                             const inputsList = action?.inputs || [];
                             const outputsList = action?.outputs || [];
 
-                            // Data flow description text
+                            const stepId = (stepItem && stepItem.stepId) 
+                                ? stepItem.stepId 
+                                : (actionId ? actionId.toLowerCase().replace(/[^a-z0-9_]/g, '_') : `step_${idx + 1}`);
+
+                            // Dynamic Data flow description text
                             let dataFlowHint = '';
-                            if (idx === 0) {
-                                dataFlowHint = 'Khởi tạo và xuất facts nền tảng qua set_fact (output_action1) để các bước sau tái sử dụng.';
-                            } else if (idx === 1) {
-                                dataFlowHint = 'Kế thừa facts trạng thái từ Bước 1, thực hiện chu trình chuyển đổi và ghi nhận mốc thời gian/uptime.';
+                            if (outputsList.length > 0) {
+                                dataFlowHint = `Bước này xuất <strong>${outputsList.length} Fact(s)</strong>: [${outputsList.map(o => `<code style="color:#38bdf8; font-family: monospace;">${o.name}</code>`).join(', ')}] phục vụ Data Piping cho các bước sau.`;
                             } else {
-                                dataFlowHint = 'Đối chiếu trạng thái dịch vụ với kết quả từ Bước 1 & 2 để đưa ra kết luận PASS/FAIL (embedded assert).';
+                                dataFlowHint = `Thực thi tác vụ ${capability} và lưu audit log kết quả thực thi (PASS/FAIL).`;
                             }
 
                             return `
@@ -1753,8 +1801,9 @@ async function openBlueprintDetailModal(bpName) {
                                         <div style="display: flex; align-items: center; gap: 0.6rem;">
                                             <span class="composer-step-number" style="background: #3b82f6; width: 26px; height: 26px; font-size: 0.8rem;">${idx + 1}</span>
                                             <div>
-                                                <div style="font-weight: 600; color: #f9fafb; font-size: 0.95rem;">
-                                                    ${actName}
+                                                <div style="display: flex; align-items: center; gap: 0.45rem;">
+                                                    <span style="font-weight: 600; color: #f9fafb; font-size: 0.95rem;">${actName}</span>
+                                                    <span class="badge" style="background: #1e293b; color: #38bdf8; font-family: monospace; font-size: 0.68rem; border: 1px solid #334155;">ID: ${stepId}</span>
                                                 </div>
                                                 <div style="font-family: monospace; font-size: 0.75rem; color: #60a5fa;">
                                                     ${actionId}
@@ -1772,6 +1821,7 @@ async function openBlueprintDetailModal(bpName) {
                                     <!-- Data Flow Hint -->
                                     <div style="font-size: 0.75rem; color: #94a3b8; background: #1e293b; padding: 0.4rem 0.65rem; border-radius: 0.25rem; margin-bottom: 0.75rem; border-left: 2px solid #38bdf8;">
                                         <strong>Luồng dữ liệu:</strong> ${dataFlowHint}
+                                        ${idx > 0 ? `<div style="margin-top: 0.25rem; font-size: 0.7rem; color: #64748b;">🔗 Có thể liên kết nhận Fact từ các bước trước qua nút <strong>🔗 Dùng Fact</strong> khi tạo Change.</div>` : ''}
                                     </div>
 
                                     <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 0.85rem; font-size: 0.8rem;">
@@ -3039,8 +3089,9 @@ async function approveChange(changeId) {
     }
 }
 
-async function executeChange(changeId) {
+async function executeChange(changeId, autoRun = false) {
     state.activeChangeId = changeId;
+    sessionStorage.setItem('synapse_active_change_id', changeId);
     const change = state.changes.find(c => c.id === changeId);
     
     let exec = state.executions.find(e => e.changeId === changeId);
@@ -3059,10 +3110,19 @@ async function executeChange(changeId) {
     state.currentExecution = exec || null;
     if (exec && exec.logTail) {
         state.executionLog = exec.logTail.split('\n');
-    } else {
+    } else if (!autoRun) {
         state.executionLog = [];
     }
     renderView('executions');
+
+    // Auto-run if requested and change is in Approved state
+    if (autoRun && change && change.state === 'Approved') {
+        runExecution(changeId);
+    }
+}
+
+function switchExecutionChange(changeId) {
+    executeChange(changeId, false);
 }
 
 async function createChange() {
@@ -3096,6 +3156,8 @@ async function createChange() {
 
         const change = await res.json();
         state.changes.push(change);
+        state.activeChangeId = change.id;
+        sessionStorage.setItem('synapse_active_change_id', change.id);
         closeModal();
         renderView('changes');
         
@@ -3164,8 +3226,8 @@ function viewChangeDetail(changeId) {
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                     ${change.state === 'Assessed' && change.policyResult === 'APPROVAL' ? `<button class="btn btn-primary" onclick="closeModal(); approveChange('${change.id}')">✓ Approve</button>` : ''}
-                    ${change.state === 'Approved' ? `<button class="btn btn-primary" onclick="closeModal(); executeChange('${change.id}')">▶ Execute</button>` : ''}
-                    ${change.state === 'Executing' || change.state === 'Verified' || change.state === 'Failed' ? `<button class="btn btn-primary" onclick="closeModal(); executeChange('${change.id}')">View Execution</button>` : ''}
+                    ${change.state === 'Approved' ? `<button class="btn btn-primary" onclick="closeModal(); executeChange('${change.id}', true)">▶ Execute</button>` : ''}
+                    ${change.state === 'Executing' || change.state === 'Verified' || change.state === 'Failed' ? `<button class="btn btn-primary" onclick="closeModal(); executeChange('${change.id}', false)">View Execution</button>` : ''}
                 </div>
             </div>
         </div>
@@ -3289,7 +3351,7 @@ async function runExecution(changeId) {
                     
                     updateExecutionLog();
                     // Update header badge & buttons in-place (avoid full re-render which would "jump" the page)
-                    const headerActions = document.querySelector('.view-header > div');
+                    const headerActions = document.querySelector('.execution-actions') || document.querySelector('.view-header > div:last-child');
                     if (headerActions && change) {
                         const isSuccess = status.status === 'completed' || status.status === 'successful';
                         headerActions.innerHTML = `
@@ -3301,6 +3363,26 @@ async function runExecution(changeId) {
                             </button>
                             <button class="btn btn-secondary" onclick="renderView('changes')">← Back to Changes</button>
                         `;
+                    }
+
+                    // Update Stepper in-place so "Verified ✅" shows up immediately
+                    const stepperEl = document.querySelector('.stepper');
+                    if (stepperEl && change) {
+                        stepperEl.outerHTML = renderStepper(change.state);
+                    }
+
+                    // Update Change Details badge in-place
+                    const changeDetailsBadge = document.querySelector('#changeDetailsStateBadge') || document.querySelector('.card .badge');
+                    if (changeDetailsBadge && change) {
+                        changeDetailsBadge.className = `badge badge-${getStateColor(change.state)}`;
+                        changeDetailsBadge.textContent = change.state;
+                    }
+
+                    // Update dropdown selector if present
+                    const selector = document.getElementById('changeExecutionSelector');
+                    if (selector && change) {
+                        const opt = selector.querySelector(`option[value="${change.id}"]`);
+                        if (opt) opt.textContent = `${change.id} [${change.state}] — ${change.objective}`;
                     }
                 }
             } catch (error) {

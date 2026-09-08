@@ -1,0 +1,10 @@
+{
+  "liveServer.settings.ignoreFiles": [
+    "**/backend/**",
+    "**/.git/**",
+    "**/*.log",
+    "**/*.json",
+    "**/*.yml",
+    "**/*.yaml"
+  ]
+}

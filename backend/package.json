@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
+    "dev": "node --watch-path=server.js --watch-path=policy.js --watch-path=catalogStore.js --watch-path=yamlGenerator.js --watch-path=ansibleRunner.js --watch-path=audit.js --watch-path=catalog.json server.js",
     "verify": "node verify-setup.js"
   },
   "dependencies": {

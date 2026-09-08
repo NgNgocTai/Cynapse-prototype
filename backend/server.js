@@ -546,13 +546,23 @@ async function runOrchestrator(executionId, plan, changeId) {
   // 1. Generate the complete, parameter-bound Playbook YAML
   const playbookContent = generateBlueprintPlaybook(blueprint, targetHosts, stepOverrides);
 
-  // 2. Prepare structured extraVars for per-action inputs
+  // 2. Prepare structured extraVars for per-action inputs (dynamic for any N steps)
   const extraVars = {
-    target_hosts: targetHosts,
-    action1: stepOverrides[0]?.inputs || blueprint.spec?.steps?.[0]?.inputs || {},
-    action2: stepOverrides[1]?.inputs || blueprint.spec?.steps?.[1]?.inputs || {},
-    action3: stepOverrides[2]?.inputs || blueprint.spec?.steps?.[2]?.inputs || {}
+    target_hosts: targetHosts
   };
+  const bpStepsList = blueprint.spec?.steps || [];
+  const totalStepsCount = Math.max(stepOverrides.length, bpStepsList.length);
+  for (let i = 0; i < totalStepsCount; i++) {
+    const sOverride = stepOverrides[i];
+    const sBp = bpStepsList[i];
+    const stepInputs = sOverride?.inputs || sBp?.inputs || {};
+    extraVars[`action${i + 1}`] = stepInputs;
+
+    const stepId = sOverride?.stepId || sBp?.stepId;
+    if (stepId) {
+      extraVars[stepId] = stepInputs;
+    }
+  }
 
   writeAudit('Execution', executionId, 'orchestrator', 'playbook_generated', 'success',
     `Generated Ansible playbook for ${blueprint.metadata.name} on target ${targetHosts}`);
