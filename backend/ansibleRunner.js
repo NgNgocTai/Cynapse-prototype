@@ -214,6 +214,9 @@ export async function runAnsiblePlaybook({
 
       args = [
         ...wslPrefix,
+        'env',
+        'ANSIBLE_PIPELINING=true',
+        'ANSIBLE_ROLES_PATH=/home/ngoctai/.ansible/roles:/home/ngoctai/projects/SYNAPSE/roles',
         ansibleExecutable,
         effectivePlaybookPath,
         '-i', effectiveInventoryPath,

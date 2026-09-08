@@ -247,42 +247,54 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
         }
       }
 
-      playbookYaml += `  tasks:\n`;
+      if (action && action.implementation && action.implementation.role) {
+        const roleName = action.implementation.role;
+        const becomeUser = action.implementation.become_user || '{{ db_os_user | default("postgres") }}';
+        playbookYaml += `  become: true\n`;
+        playbookYaml += `  become_user: ${JSON.stringify(String(becomeUser))}\n`;
+        playbookYaml += `  roles:\n`;
+        playbookYaml += `    - role: ${roleName}\n`;
+      } else {
+        playbookYaml += `  tasks:\n`;
 
-      if (action && Array.isArray(action.task_template) && action.task_template.length > 0) {
-        action.task_template.forEach((t, tIdx) => {
-          playbookYaml += `    - name: "${idx + 1}.${tIdx + 1} ${t.name || actionName}"\n`;
-          if (t.module) {
-            playbookYaml += `      ${t.module}:\n`;
-            if (t.args) {
-              for (const [argK, argV] of Object.entries(t.args)) {
-                if (typeof argV === 'number' || typeof argV === 'boolean') {
-                  playbookYaml += `        ${argK}: ${argV}\n`;
-                } else if (Array.isArray(argV)) {
-                  playbookYaml += `        ${argK}:\n`;
-                  argV.forEach(item => {
-                    playbookYaml += `          - ${JSON.stringify(String(item))}\n`;
-                  });
-                } else {
-                  playbookYaml += `        ${argK}: ${JSON.stringify(String(argV))}\n`;
+        if (action && Array.isArray(action.task_template) && action.task_template.length > 0) {
+          action.task_template.forEach((t, tIdx) => {
+            playbookYaml += `    - name: "${idx + 1}.${tIdx + 1} ${t.name || actionName}"\n`;
+            if (t.module) {
+              playbookYaml += `      ${t.module}:\n`;
+              if (t.args) {
+                for (const [argK, argV] of Object.entries(t.args)) {
+                  if (typeof argV === 'number' || typeof argV === 'boolean') {
+                    playbookYaml += `        ${argK}: ${argV}\n`;
+                  } else if (Array.isArray(argV)) {
+                    playbookYaml += `        ${argK}:\n`;
+                    argV.forEach(item => {
+                      playbookYaml += `          - ${JSON.stringify(String(item))}\n`;
+                    });
+                  } else {
+                    playbookYaml += `        ${argK}: ${JSON.stringify(String(argV))}\n`;
+                  }
                 }
               }
             }
-          }
-          if (t.register) {
-            playbookYaml += `      register: ${t.register}\n`;
-          }
-          if (t.failed_when !== undefined) {
-            playbookYaml += `      failed_when: ${t.failed_when}\n`;
-          }
-        });
-      } else {
-        playbookYaml += `    - name: "${idx + 1}.1 Execute ${actionName}"\n`;
-        playbookYaml += `      ansible.builtin.debug:\n`;
-        playbookYaml += `        msg: "Step ${idx + 1}: ${actionName} executed successfully on host {{ inventory_hostname }}"\n`;
+            if (t.register) {
+              playbookYaml += `      register: ${t.register}\n`;
+            }
+            if (t.failed_when !== undefined) {
+              playbookYaml += `      failed_when: ${t.failed_when}\n`;
+            }
+          });
+        } else {
+          playbookYaml += `    - name: "${idx + 1}.1 Execute ${actionName}"\n`;
+          playbookYaml += `      ansible.builtin.debug:\n`;
+          playbookYaml += `        msg: "Step ${idx + 1}: ${actionName} executed successfully on host {{ inventory_hostname }}"\n`;
+        }
       }
 
       if (action && Array.isArray(action.outputs) && action.outputs.length > 0) {
+        if (action.implementation && action.implementation.role) {
+          playbookYaml += `  post_tasks:\n`;
+        }
         playbookYaml += `    - name: "${idx + 1}.${(action.task_template?.length || 1) + 1} Export Step ${idx + 1} Facts (${stepId})"\n`;
         playbookYaml += `      ansible.builtin.set_fact:\n`;
         

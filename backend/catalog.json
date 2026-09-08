@@ -450,6 +450,71 @@
         "action": "NOTIFY_ONCALL"
       },
       "riskDefault": "LOW"
+    },
+    {
+      "id": "POSTGRES_CREATE_ACCOUNT",
+      "name": "PostgreSQL Account Provisioning (HA Patroni)",
+      "domain": "CNTT",
+      "capability": "DATABASE_ADMIN",
+      "riskDefault": "MEDIUM",
+      "description": "Tạo tài khoản người dùng PostgreSQL an toàn trên cụm Patroni HA: tự động phát hiện psql, xác nhận Leader/Primary node, kiểm tra chống trùng lặp và truyền mật khẩu an toàn qua stdin",
+      "implementation": {
+        "provider": "ansible",
+        "role": "create_account",
+        "become_user": "postgres",
+        "estimatedDurationSec": 20
+      },
+      "inputs": [
+        {
+          "name": "db_user",
+          "label": "Database Username",
+          "type": "string",
+          "default": "dev_app_user",
+          "required": true,
+          "placeholder": "e.g. dev_app_user",
+          "description": "Tên role/user cần tạo trong PostgreSQL"
+        },
+        {
+          "name": "db_user_password",
+          "label": "Database User Password",
+          "type": "string",
+          "default": "P@ssw0rd2026",
+          "required": true,
+          "placeholder": "Enter strong password",
+          "description": "Mật khẩu cho user (truyền bảo mật qua stdin, không lộ process)"
+        },
+        {
+          "name": "db_os_user",
+          "label": "PostgreSQL OS User",
+          "type": "string",
+          "default": "postgres",
+          "required": false,
+          "description": "Tài khoản hệ điều hành để chạy psql (mặc định: postgres)"
+        },
+        {
+          "name": "db_name",
+          "label": "Initial Database",
+          "type": "string",
+          "default": "postgres",
+          "required": false,
+          "description": "Cơ sở dữ liệu kết nối ban đầu"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "user_created",
+          "type": "boolean",
+          "description": "Tài khoản cơ sở dữ liệu đã được tạo thành công trên node Primary"
+        }
+      ],
+      "verification": {
+        "type": "embedded",
+        "note": "Ansible assert and psql SELECT count query"
+      },
+      "compensation": {
+        "type": "escalate",
+        "action": "NOTIFY_ONCALL"
+      }
     }
   ],
   "blueprints": [
@@ -511,6 +576,35 @@
             "stepId": "verify_disk",
             "action": "DISK_VERIFY_AFTER",
             "inputs": {}
+          }
+        ],
+        "compensation": {
+          "onFailure": "NOTIFY_ONCALL"
+        },
+        "status": "PUBLISHED"
+      }
+    },
+    {
+      "kind": "AutomationBlueprint",
+      "metadata": {
+        "name": "postgres-account-provisioning",
+        "version": "1.0.0"
+      },
+      "spec": {
+        "owner": "DBA-Team",
+        "domain": "CNTT",
+        "description": "Quy trình cấp phát tài khoản PostgreSQL chuẩn doanh nghiệp với kiểm tra HA Patroni, chống trùng lặp và bảo mật mật khẩu qua stdin",
+        "steps": [
+          {
+            "stepIndex": 1,
+            "stepId": "create_pg_account",
+            "action": "POSTGRES_CREATE_ACCOUNT",
+            "inputs": {
+              "db_user": "demo_synapse_user",
+              "db_user_password": "Synapse@2026User",
+              "db_os_user": "postgres",
+              "db_name": "postgres"
+            }
           }
         ],
         "compensation": {
