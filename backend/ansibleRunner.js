@@ -6,6 +6,88 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+export const DIAGNOSTIC_RULES = [
+  {
+    pattern: /password authentication failed/i,
+    title: "Lỗi xác thực mật khẩu Database",
+    suggestion: "Kiểm tra lại biến db_user_password hoặc cấu hình pg_hba.conf trên máy chủ."
+  },
+  {
+    pattern: /psql.*not found|command not found/i,
+    title: "Thiếu công cụ psql",
+    suggestion: "Máy chủ đích chưa cài đặt postgresql-client hoặc psql không nằm trong $PATH mặc định."
+  },
+  {
+    pattern: /UNREACHABLE|Connection refused|timed out|No route to host/i,
+    title: "Mất kết nối SSH tới máy chủ",
+    suggestion: "Kiểm tra IP/Domain, Port SSH và đảm bảo dịch vụ sshd trên máy chủ đang hoạt động."
+  },
+  {
+    pattern: /chmod: invalid operator|permission denied/i,
+    title: "Lỗi phân quyền hệ thống (POSIX ACL)",
+    suggestion: "Đảm bảo ANSIBLE_PIPELINING=true đang được bật hoặc kiểm tra quyền sudo của user SSH."
+  },
+  {
+    pattern: /is undefined/i,
+    title: "Biến chưa được định nghĩa",
+    suggestion: "Kiểm tra lại khai báo biến đầu vào trong Action hoặc giá trị trả về của các bước trước."
+  }
+];
+
+export function extractErrorMessage(raw) {
+  if (!raw || !raw.trim()) return '';
+  let trimmed = raw.trim();
+  
+  // Strip prefix like "fatal: [host]: FAILED! => "
+  const arrowIdx = trimmed.indexOf('=>');
+  if (arrowIdx !== -1) {
+    trimmed = trimmed.slice(arrowIdx + 2).trim();
+  }
+
+  // 1. Try standard JSON parse
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed.msg || parsed.stderr || parsed.module_stderr || trimmed;
+  } catch (e) {
+    // 2. Try converting Python dict to JSON (True/False/None and single quotes)
+    try {
+      const sanitized = trimmed
+        .replace(/\bNone\b/g, 'null')
+        .replace(/\bTrue\b/g, 'true')
+        .replace(/\bFalse\b/g, 'false')
+        .replace(/'/g, '"');
+      const parsed = JSON.parse(sanitized);
+      return parsed.msg || parsed.stderr || parsed.module_stderr || trimmed;
+    } catch (e2) {
+      // 3. Fallback regex supporting escaped quotes
+      const msgMatch = trimmed.match(/(?:'msg'|"msg")\s*:\s*(['"])(?<msg>(?:\\.|(?!\1).)*)\1/s);
+      if (msgMatch && msgMatch.groups && msgMatch.groups.msg) {
+        return msgMatch.groups.msg.replace(/\\(['"])/g, '$1');
+      }
+      const stderrMatch = trimmed.match(/(?:'stderr'|"stderr")\s*:\s*(['"])(?<stderr>(?:\\.|(?!\1).)*)\1/s);
+      if (stderrMatch && stderrMatch.groups && stderrMatch.groups.stderr) {
+        return stderrMatch.groups.stderr.replace(/\\(['"])/g, '$1');
+      }
+      const inlineMatch = trimmed.match(/msg:\s*(.+)/i);
+      if (inlineMatch) return inlineMatch[1].trim();
+      return trimmed.slice(0, 300);
+    }
+  }
+}
+
+/**
+ * Convert Windows path to WSL /mnt/<drive>/path format
+ */
+export function toWslPath(winPath) {
+  if (!winPath) return '';
+  const full = path.resolve(winPath).replace(/\\/g, '/');
+  const match = full.match(/^([A-Za-z]):\/(.*)/);
+  if (match) {
+    return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
+  }
+  return full;
+}
+
 /**
  * Detect available Ansible runtime environment.
  * Order of preference:
@@ -29,20 +111,27 @@ export function detectAnsibleEnvironment() {
     // not found
   }
 
-  // 2. Check WSL CLI on Windows (specifically check user's Ubuntu .venv)
+  // 2. Check WSL CLI on Windows
   if (os.platform() === 'win32') {
-    try {
-      execSync('wsl -d Ubuntu -u ngoctai /home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook --version', { stdio: 'ignore' });
-      return { 
-        type: 'wsl', 
-        command: 'wsl -d Ubuntu -u ngoctai /home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook',
-        ansibleBin: '/home/ngoctai/projects/SYNAPSE/.venv/bin/ansible-playbook',
-        distro: 'Ubuntu',
-        user: 'ngoctai',
-        inventory: '/home/ngoctai/projects/SYNAPSE/service-automation/inventory.ini'
-      };
-    } catch (e) {
-      // not found in specific venv
+    const customBin = process.env.ANSIBLE_PLAYBOOK_BIN;
+    const wslDistro = process.env.WSL_DISTRO || 'Ubuntu';
+    const wslUser = process.env.WSL_USER;
+
+    if (customBin) {
+      try {
+        const userArg = wslUser ? `-u ${wslUser} ` : '';
+        const distroArg = wslDistro ? `-d ${wslDistro} ` : '';
+        execSync(`wsl ${distroArg}${userArg}${customBin} --version`, { stdio: 'ignore' });
+        return { 
+          type: 'wsl', 
+          command: `wsl ${distroArg}${userArg}${customBin}`,
+          ansibleBin: customBin,
+          distro: wslDistro,
+          user: wslUser
+        };
+      } catch (e) {
+        // not found at customBin
+      }
     }
 
     try {
@@ -203,20 +292,37 @@ export async function runAnsiblePlaybook({
     let bin = 'ansible-playbook';
     let args = [];
 
+    const configuredRolesPath = process.env.ANSIBLE_ROLES_PATH;
+    if (!configuredRolesPath) {
+      throw new Error('Cấu hình thiếu: ANSIBLE_ROLES_PATH chưa được khai báo trong backend/.env');
+    }
+
+    const localRolesDir = path.join(__dirname, 'roles');
+
     if (env.type === 'wsl') {
       bin = 'wsl';
       effectivePlaybookPath = toWslPath(playbookPath);
       effectiveVarsPath = toWslPath(varsPath);
       effectiveInventoryPath = toWslPath(inventoryPath);
 
+      const effectiveRolesPath = `${toWslPath(localRolesDir)}:${configuredRolesPath}`;
       const ansibleExecutable = env.ansibleBin || 'ansible-playbook';
-      const wslPrefix = env.distro ? ['-d', env.distro, '-u', env.user || 'ngoctai'] : [];
+      const wslUser = process.env.WSL_USER || env.user;
+      if (!wslUser) {
+        throw new Error('Cấu hình thiếu: WSL_USER chưa được khai báo trong backend/.env cho môi trường WSL');
+      }
+      const wslDistro = process.env.WSL_DISTRO || env.distro;
+      const wslPrefix = [];
+      if (wslDistro) wslPrefix.push('-d', wslDistro);
+      wslPrefix.push('-u', wslUser);
 
       args = [
         ...wslPrefix,
         'env',
+        'TERM=dumb',
+        'ANSIBLE_FORCE_COLOR=0',
         'ANSIBLE_PIPELINING=true',
-        'ANSIBLE_ROLES_PATH=/home/ngoctai/.ansible/roles:/home/ngoctai/projects/SYNAPSE/roles',
+        `ANSIBLE_ROLES_PATH=${effectiveRolesPath}`,
         ansibleExecutable,
         effectivePlaybookPath,
         '-i', effectiveInventoryPath,
@@ -232,35 +338,148 @@ export async function runAnsiblePlaybook({
 
     appendLog(`[ANSIBLE RUNNER] Command: ${bin} ${args.slice(0, 4).join(' ')} ... -i <dynamic_inventory> --extra-vars @<secure_temp_file>`);
 
-    // 6. Spawn child process with safe execution flags (pipelining, roles path)
+    // 6. Spawn child process with safe execution flags (pipelining, roles path, dumb term)
     const child = spawn(bin, args, {
       env: { 
         ...process.env, 
+        ANSIBLE_ROLES_PATH: `${localRolesDir}:${configuredRolesPath}`,
+        TERM: 'dumb',
         ANSIBLE_FORCE_COLOR: '0', 
         PYTHONUNBUFFERED: '1',
-        ANSIBLE_PIPELINING: 'true',
-        ANSIBLE_ROLES_PATH: env.type === 'wsl' ? '/home/ngoctai/projects/SYNAPSE/roles' : path.join(__dirname, 'roles')
+        ANSIBLE_PIPELINING: 'true'
       }
     });
 
     let currentStep = 0;
+    const executionDetails = {
+      tasks: [],
+      failureDiagnosis: null
+    };
+
+    let inFailBlock = false;
+    let failHost = null;
+    let failBuffer = [];
+    let isUnreachable = false;
+
+    function flushFailBlock() {
+      if (!inFailBlock) return;
+      const rawErr = failBuffer.join('\n').trim();
+      const errorMsg = extractErrorMessage(rawErr);
+      const rule = DIAGNOSTIC_RULES.find(r => r.pattern.test(rawErr) || r.pattern.test(errorMsg));
+      
+      const lastTask = executionDetails.tasks[executionDetails.tasks.length - 1];
+      if (lastTask) {
+        lastTask.status = 'FAILED';
+      }
+
+      executionDetails.failureDiagnosis = {
+        failedTask: lastTask ? lastTask.name : `Step ${currentStep + 1}`,
+        host: failHost || 'db01',
+        isUnreachable,
+        errorMessage: errorMsg || rawErr || 'Thực thi lệnh thất bại',
+        title: rule?.title || (isUnreachable ? 'Lỗi kết nối máy chủ' : 'Thực thi kịch bản thất bại'),
+        suggestion: rule?.suggestion || 'Kiểm tra chi tiết trong log terminal bên dưới.'
+      };
+
+      onStepProgress(currentStep, 'FAILED', executionDetails);
+      inFailBlock = false;
+      failBuffer = [];
+    }
 
     child.stdout.on('data', (data) => {
       const text = data.toString('utf-8');
       const lines = text.split(/\r?\n/);
       for (const line of lines) {
-        if (!line.trim()) continue;
+        if (!line.trim()) {
+          if (inFailBlock && failBuffer.length > 2) {
+            flushFailBlock();
+          }
+          continue;
+        }
         appendLog(line);
 
-        // Detect Step transitions dynamically (matches Step 1, Step 2... or Action 1, Action 2...)
-        const stepMatch = line.match(/PLAY \[(?:Step|Action) (\d+):/i);
+        // 1. Detect Step transitions dynamically (PLAY [Step 1: ...])
+        const stepMatch = line.match(/^PLAY \[(?:Step|Action) (\d+):/i);
         if (stepMatch) {
+          flushFailBlock();
           const stepNum = parseInt(stepMatch[1], 10) - 1;
           if (stepNum > 0 && currentStep < stepNum) {
-            onStepProgress(currentStep, 'SUCCESS');
+            onStepProgress(currentStep, 'SUCCESS', executionDetails);
           }
           currentStep = stepNum;
-          onStepProgress(currentStep, 'RUNNING');
+          onStepProgress(currentStep, 'RUNNING', executionDetails);
+          continue;
+        }
+
+        // 2. Detect Failure / Unreachable Block Start
+        const failMatch = line.match(/^(fatal|failed): \[(?<host>[^\]]+)\]:?\s*(FAILED|UNREACHABLE)?!\s*=>\s*(.*)/i);
+        if (failMatch) {
+          flushFailBlock();
+          inFailBlock = true;
+          failHost = failMatch.groups.host;
+          isUnreachable = /UNREACHABLE/i.test(line);
+          failBuffer = [failMatch[4] || ''];
+          continue;
+        }
+
+        if (inFailBlock) {
+          if (line.startsWith('TASK [') || line.startsWith('PLAY RECAP') || line.startsWith('PLAY [')) {
+            flushFailBlock();
+          } else {
+            failBuffer.push(line);
+            continue;
+          }
+        }
+
+        // 3. Detect Task Header (Supports BOTH flat tasks and role tasks: TASK [tên task] OR TASK [role : tên task])
+        const taskMatch = line.match(/^TASK \[(?:(?<role>[\w-]+) : )?(?<taskName>[^\]]+)\]/i);
+        if (taskMatch) {
+          flushFailBlock();
+          const taskName = taskMatch.groups.taskName.trim();
+          const roleName = taskMatch.groups.role || null;
+          
+          const existing = executionDetails.tasks.find(t => t.name === taskName && t.stepIndex === currentStep);
+          if (!existing) {
+            executionDetails.tasks.push({
+              id: `task_${executionDetails.tasks.length + 1}`,
+              stepIndex: currentStep,
+              name: taskName,
+              role: roleName,
+              status: 'RUNNING',
+              startedAt: Date.now()
+            });
+            onStepProgress(currentStep, 'RUNNING', executionDetails);
+          }
+          continue;
+        }
+
+        // 4. Detect Loop items (avoid duplicate tasks, record item progress)
+        const loopMatch = line.match(/^(?<status>ok|changed|skipping|failed|fatal): \[(?<host>[^\]]+)\] => \(item=(?<item>[^\)]+)\)/i);
+        if (loopMatch) {
+          const lastTask = executionDetails.tasks[executionDetails.tasks.length - 1];
+          if (lastTask) {
+            lastTask.items = lastTask.items || [];
+            lastTask.items.push({
+              item: loopMatch.groups.item,
+              status: loopMatch.groups.status.toUpperCase()
+            });
+            if (loopMatch.groups.status.toLowerCase() === 'changed') lastTask.status = 'CHANGED';
+            else if (lastTask.status === 'RUNNING') lastTask.status = 'OK';
+          }
+          continue;
+        }
+
+        // 5. Detect Standard Task Completion Status
+        const statusMatch = line.match(/^(ok|changed|skipping): \[(?<host>[^\]]+)\]/i);
+        if (statusMatch) {
+          const st = statusMatch[1].toLowerCase();
+          const lastTask = executionDetails.tasks[executionDetails.tasks.length - 1];
+          if (lastTask && lastTask.status === 'RUNNING') {
+            lastTask.status = st === 'changed' ? 'CHANGED' : (st === 'skipping' ? 'SKIPPED' : 'OK');
+            lastTask.finishedAt = Date.now();
+            onStepProgress(currentStep, 'RUNNING', executionDetails);
+          }
+          continue;
         }
       }
     });
@@ -280,19 +499,23 @@ export async function runAnsiblePlaybook({
       });
     });
 
+    flushFailBlock();
+
     const isSuccess = exitCode === 0;
     if (isSuccess) {
-      onStepProgress(currentStep, 'SUCCESS');
+      onStepProgress(currentStep, 'SUCCESS', executionDetails);
       appendLog(`[ANSIBLE RUNNER] Execution completed successfully with exit code 0.`);
     } else {
-      onStepProgress(currentStep, 'FAILED');
+      onStepProgress(currentStep, 'FAILED', executionDetails);
       appendLog(`[ANSIBLE RUNNER] Execution failed with exit code ${exitCode}.`);
     }
 
     return {
       success: isSuccess,
       exitCode,
-      logTail: fullLog.slice(-5000)
+      logTail: fullLog.slice(-5000),
+      tasks: executionDetails.tasks,
+      failureDiagnosis: executionDetails.failureDiagnosis
     };
   } finally {
     // 5. Secure Cleanup: Guarantee deletion of temp credentials, dynamic inventory & playbook

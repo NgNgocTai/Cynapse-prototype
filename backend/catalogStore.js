@@ -13,9 +13,7 @@ export function getCatalog() {
 }
 
 export function saveCatalog(catalog) {
-  const tmp = CATALOG_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(catalog, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, CATALOG_FILE);
+  fs.writeFileSync(CATALOG_FILE, JSON.stringify(catalog, null, 2) + '\n', 'utf-8');
 }
 
 // === Validation helpers ===
@@ -36,7 +34,13 @@ function validateAction(action, catalog, isUpdate = false) {
 
   if (!isUpdate) {
     const exists = catalog.actions.find(a => a.id === action.id);
-    if (exists) errors.push(`Action "${action.id}" already exists`);
+    if (exists) {
+      if (exists.status === 'PUBLISHED') {
+        errors.push(`Action "${action.id}" already exists and is PUBLISHED. Overwrite forbidden.`);
+      } else if (!action.overwrite) {
+        errors.push(`Action "${action.id}" already exists as DRAFT. Set overwrite=true to replace.`);
+      }
+    }
   }
 
   if (!action.name || action.name.trim().length === 0) {
@@ -127,6 +131,7 @@ export function getAction(id) {
 export function addAction(actionInput) {
   const catalog = getCatalog();
   const errors = validateAction(actionInput, catalog);
+  if (errors.length > 0) return { ok: false, errors };
   const impl = actionInput.implementation || {};
   const action = {
     id: actionInput.id,
@@ -139,9 +144,10 @@ export function addAction(actionInput) {
     task_template: actionInput.task_template || null,
     implementation: {
       provider: impl.provider || 'ansible',
-      awxJobTemplateId: impl.awxJobTemplateId,
+      awxJobTemplateId: impl.awxJobTemplateId || null,
       estimatedDurationSec: impl.estimatedDurationSec || 60,
-      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {})
+      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {}),
+      ...(impl.role ? { role: impl.role, become_user: impl.become_user } : {})
     },
     verification: actionInput.verification || {
       type: 'embedded',
@@ -152,11 +158,17 @@ export function addAction(actionInput) {
       action: 'NOTIFY_ONCALL'
     },
     riskDefault: actionInput.riskDefault || 'LOW',
+    status: actionInput.status || 'DRAFT',
     ...(actionInput.parameters ? { parameters: actionInput.parameters } : {}),
     ...(actionInput.templateId ? { templateId: actionInput.templateId } : {})
   };
 
-  catalog.actions.push(action);
+  const existingIdx = catalog.actions.findIndex(a => a.id === action.id);
+  if (existingIdx !== -1) {
+    catalog.actions[existingIdx] = action;
+  } else {
+    catalog.actions.push(action);
+  }
   saveCatalog(catalog);
   return { ok: true, action };
 }
@@ -186,16 +198,29 @@ export function updateAction(id, actionInput) {
       provider: impl.provider || 'ansible',
       awxJobTemplateId: impl.awxJobTemplateId,
       estimatedDurationSec: impl.estimatedDurationSec || 60,
-      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {})
+      ...(impl.playbookRef ? { playbookRef: impl.playbookRef } : {}),
+      ...(impl.role ? { role: impl.role, become_user: impl.become_user } : {})
     },
     verification: actionInput.verification || current.verification,
     compensation: actionInput.compensation || current.compensation,
     riskDefault: actionInput.riskDefault || current.riskDefault,
+    status: actionInput.status || current.status || 'DRAFT',
     parameters: actionInput.parameters || current.parameters,
     templateId: actionInput.templateId || current.templateId
   };
 
   catalog.actions[index] = action;
+  saveCatalog(catalog);
+  return { ok: true, action };
+}
+
+export function publishAction(id, actor = 'operator') {
+  const catalog = getCatalog();
+  const action = catalog.actions.find(a => a.id === id);
+  if (!action) return { ok: false, error: `Action "${id}" not found in catalog` };
+  action.status = 'PUBLISHED';
+  action.publishedAt = new Date().toISOString();
+  action.publishedBy = actor;
   saveCatalog(catalog);
   return { ok: true, action };
 }

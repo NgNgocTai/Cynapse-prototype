@@ -260,7 +260,12 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
         if (action && Array.isArray(action.task_template) && action.task_template.length > 0) {
           action.task_template.forEach((t, tIdx) => {
             playbookYaml += `    - name: "${idx + 1}.${tIdx + 1} ${t.name || actionName}"\n`;
-            if (t.module) {
+            if (t.module === 'ansible.builtin.include_role') {
+              playbookYaml += `      ansible.builtin.include_role:\n`;
+              playbookYaml += `        name: ${JSON.stringify(String(t.args?.name || 'create_account'))}\n`;
+              playbookYaml += `      become: true\n`;
+              playbookYaml += `      become_user: ${JSON.stringify(String(t.args?.become_user || 'postgres'))}\n`;
+            } else if (t.module) {
               playbookYaml += `      ${t.module}:\n`;
               if (t.args) {
                 for (const [argK, argV] of Object.entries(t.args)) {
@@ -306,21 +311,21 @@ export function generateBlueprintPlaybook(blueprint, targetHosts = 'db_servers',
           let rawExpr = '';
 
           if (out.extract_field) {
-            rawExpr = `${regName}.${out.extract_field} | default('')`;
+            rawExpr = `(${regName}.${out.extract_field} if (${regName} is defined and ${regName}.${out.extract_field} is defined) else '')`;
           } else if (taskModule.includes('command') || taskModule.includes('shell')) {
-            rawExpr = `${regName}.stdout | default('')`;
+            rawExpr = `(${regName}.stdout if (${regName} is defined and ${regName}.stdout is defined) else '')`;
           } else if (taskModule.includes('uri')) {
             if (out.name.includes('code') || out.name.includes('status')) {
-              rawExpr = `${regName}.status | default(200)`;
+              rawExpr = `(${regName}.status if (${regName} is defined and ${regName}.status is defined) else 200)`;
             } else {
-              rawExpr = `${regName}.json | default(${regName}.content | default(''))`;
+              rawExpr = `(${regName}.json if (${regName} is defined and ${regName}.json is defined) else (${regName}.content if (${regName} is defined and ${regName}.content is defined) else ''))`;
             }
           } else if (taskModule.includes('systemd') || taskModule.includes('service')) {
-            rawExpr = `${regName}.status.ActiveState | default(${regName}.state | default('active'))`;
+            rawExpr = `(${regName}.status.ActiveState if (${regName} is defined and ${regName}.status is defined and ${regName}.status.ActiveState is defined) else (${regName}.state if (${regName} is defined and ${regName}.state is defined) else 'active'))`;
           } else if (out.type === 'boolean') {
-            rawExpr = `${regName}.rc == 0 if ${regName}.rc is defined else (not ${regName}.failed | default(false))`;
+            rawExpr = `(${regName}.rc == 0 if (${regName} is defined and ${regName}.rc is defined) else (not ${regName}.failed if (${regName} is defined and ${regName}.failed is defined) else true))`;
           } else {
-            rawExpr = `${regName}.stdout if ${regName}.stdout is defined else (${regName}.msg if ${regName}.msg is defined else ${regName})`;
+            rawExpr = `(${regName}.stdout if (${regName} is defined and ${regName}.stdout is defined) else (${regName}.msg if (${regName} is defined and ${regName}.msg is defined) else (${regName} if ${regName} is defined else ''))`;
           }
 
           // 1. Hierarchical dict: steps.<stepId>.<factName>

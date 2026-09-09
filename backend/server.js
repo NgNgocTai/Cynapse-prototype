@@ -9,9 +9,12 @@ import { calculateRisk, evaluatePolicy } from './policy.js';
 import { writeAudit, readAudit } from './audit.js';
 import {
   getCatalog,
-  listActions, getAction, addAction, updateAction, deleteAction,
+  listActions, getAction, addAction, updateAction, deleteAction, publishAction,
   listBlueprints, getBlueprint, addBlueprint, updateBlueprint, deleteBlueprint
 } from './catalogStore.js';
+import {
+  validateRoleName, extractZipWithSecurity, runSyntaxCheck, extractParametersAndTasks, installRoleToProject
+} from './roleManager.js';
 import net from 'net';
 import {
   listCredentials, getCredential, addCredential, updateCredential, deleteCredential, getCredentialSecrets
@@ -39,14 +42,15 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = parseInt(process.env.PORT || '8000', 10);
 
 // CORS config chỉ allow localhost:5500 (frontend port)
 app.use(cors({
   origin: ['http://localhost:5500', 'http://127.0.0.1:5500'],
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // In-memory state
 const state = {
@@ -262,6 +266,288 @@ app.delete('/api/actions/:id', (req, res) => {
   res.json({ message: `Action ${req.params.id} deleted` });
 });
 
+// POST /api/actions/:id/publish - Publish action from DRAFT to PUBLISHED
+app.post('/api/actions/:id/publish', (req, res) => {
+  const actor = req.headers['x-actor'] || req.body?.actor || 'operator';
+  const result = publishAction(req.params.id, actor);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  writeAudit('Action', req.params.id, actor, 'published', 'success',
+    `Action "${req.params.id}" published from DRAFT to PUBLISHED.`);
+  res.json(result.action);
+});
+
+// ===========================
+// ROLES & PLAYBOOKS IMPORT WIZARD API
+// ===========================
+
+// POST /api/roles/validate - Wizard Step 1: Check syntax and scan parameters
+app.post('/api/roles/validate', async (req, res) => {
+  try {
+    const roleName = req.body.roleName;
+    const zipBase64 = req.body.zipBase64 || req.body.fileBase64;
+    const yamlContent = req.body.yamlContent || req.body.playbookContent;
+    const isRole = req.body.isRole !== false;
+
+    if (isRole) {
+      const nameVal = validateRoleName(roleName);
+      if (!nameVal.valid) {
+        return res.status(400).json({ error: nameVal.error });
+      }
+
+      if (!zipBase64) {
+        return res.status(400).json({ error: 'Thiếu dữ liệu file zip (zipBase64 hoặc fileBase64).' });
+      }
+
+      const tmpValidationDir = path.join(__dirname, 'temp', `val_${Date.now()}`);
+      const tmpRoleDir = path.join(tmpValidationDir, nameVal.roleName);
+      fs.mkdirSync(tmpRoleDir, { recursive: true });
+
+      try {
+        const zipBuffer = Buffer.from(zipBase64, 'base64');
+        try {
+          extractZipWithSecurity(zipBuffer, tmpRoleDir);
+        } catch (zipErr) {
+          return res.status(400).json({ error: zipErr.message });
+        }
+
+        let effectiveRoleDir = tmpRoleDir;
+        if (!fs.existsSync(path.join(tmpRoleDir, 'tasks')) && fs.existsSync(path.join(tmpRoleDir, nameVal.roleName, 'tasks'))) {
+          effectiveRoleDir = path.join(tmpRoleDir, nameVal.roleName);
+        }
+
+        // Gate 2: Run syntax check
+        const syntaxResult = await runSyntaxCheck({
+          roleName: nameVal.roleName,
+          roleDir: effectiveRoleDir,
+          isRole: true
+        });
+
+        // Gate 3: Extract parameters and tasks
+        const { detectedTasks, inputs } = extractParametersAndTasks(effectiveRoleDir, true);
+
+        res.json({
+          pass: syntaxResult.pass,
+          exitCode: syntaxResult.exitCode,
+          output: syntaxResult.output,
+          syntaxOutput: syntaxResult.output,
+          stderr: syntaxResult.stderr,
+          roleName: nameVal.roleName,
+          tasks: detectedTasks,
+          inputs
+        });
+      } finally {
+        try {
+          if (fs.existsSync(tmpValidationDir)) {
+            fs.rmSync(tmpValidationDir, { recursive: true, force: true });
+          }
+        } catch (cleanErr) {
+          console.warn('[VALIDATE] Cleanup warning:', cleanErr.message);
+        }
+      }
+    } else {
+      // Standalone YAML validation
+      if (!yamlContent || !yamlContent.trim()) {
+        return res.status(400).json({ error: 'Nội dung YAML không được để trống.' });
+      }
+
+      const syntaxResult = await runSyntaxCheck({
+        roleName: 'standalone_playbook',
+        roleDir: path.join(__dirname, 'temp'),
+        isRole: false,
+        playbookContent: yamlContent
+      });
+
+      const { detectedTasks, inputs } = extractParametersAndTasks(null, false, yamlContent);
+
+      res.json({
+        pass: syntaxResult.pass,
+        exitCode: syntaxResult.exitCode,
+        output: syntaxResult.output,
+        syntaxOutput: syntaxResult.output,
+        stderr: syntaxResult.stderr,
+        tasks: detectedTasks,
+        inputs
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/roles/import - Wizard Step 2: Save role and register action in catalog as DRAFT
+app.post('/api/roles/import', async (req, res) => {
+  try {
+    const roleName = req.body.roleName;
+    const zipBase64 = req.body.zipBase64 || req.body.fileBase64;
+    const yamlContent = req.body.yamlContent || req.body.playbookContent;
+    const isRole = req.body.isRole !== false;
+    const actionId = req.body.actionId || (roleName ? `ACTION_ROLE_${roleName.toUpperCase()}` : null);
+    const actionName = req.body.actionName || req.body.displayName || (roleName ? `Role: ${roleName}` : null);
+    const domain = req.body.domain || 'CNTT';
+    const capability = req.body.capability || 'DATABASE_ADMIN';
+    const riskDefault = req.body.riskDefault || 'MEDIUM';
+    const description = req.body.description || '';
+    let inputs = req.body.inputs || [];
+    const autoCreateBlueprint = Boolean(req.body.autoCreateBlueprint ?? req.body.createBlueprint ?? false);
+    const overwrite = Boolean(req.body.overwrite);
+
+    const actor = req.headers['x-actor'] || req.body?.actor || 'operator';
+
+    if (!actionId || !actionName) {
+      return res.status(400).json({ error: 'actionId và actionName là bắt buộc.' });
+    }
+
+    if (isRole) {
+      const nameVal = validateRoleName(roleName);
+      if (!nameVal.valid) {
+        return res.status(400).json({ error: nameVal.error });
+      }
+
+      if (!zipBase64) {
+        return res.status(400).json({ error: 'Thiếu dữ liệu file zip (zipBase64 hoặc fileBase64).' });
+      }
+
+      const tmpInstallDir = path.join(__dirname, 'temp', `inst_${Date.now()}`);
+      const tmpRoleDir = path.join(tmpInstallDir, nameVal.roleName);
+      fs.mkdirSync(tmpRoleDir, { recursive: true });
+
+      try {
+        const zipBuffer = Buffer.from(zipBase64, 'base64');
+        try {
+          extractZipWithSecurity(zipBuffer, tmpRoleDir);
+        } catch (zipErr) {
+          return res.status(400).json({ error: zipErr.message });
+        }
+
+        let effectiveRoleDir = tmpRoleDir;
+        if (!fs.existsSync(path.join(tmpRoleDir, 'tasks')) && fs.existsSync(path.join(tmpRoleDir, nameVal.roleName, 'tasks'))) {
+          effectiveRoleDir = path.join(tmpRoleDir, nameVal.roleName);
+        }
+
+        // Run syntax check before permanent installation
+        const syntaxResult = await runSyntaxCheck({
+          roleName: nameVal.roleName,
+          roleDir: effectiveRoleDir,
+          isRole: true
+        });
+
+        if (!syntaxResult.pass) {
+          return res.status(400).json({
+            error: `Syntax check failed: ${syntaxResult.stderr || syntaxResult.output}`
+          });
+        }
+
+        // Install role permanently into project roles folder
+        installRoleToProject(nameVal.roleName, effectiveRoleDir);
+
+        // Auto extract inputs if not passed
+        if (!inputs || inputs.length === 0) {
+          const extracted = extractParametersAndTasks(effectiveRoleDir, true);
+          inputs = extracted.inputs || [];
+        }
+
+        // Register Action in catalogStore
+        const actionPayload = {
+          id: actionId,
+          name: actionName,
+          domain,
+          capability,
+          riskDefault,
+          description: description || `Imported Ansible Role: ${nameVal.roleName}`,
+          inputs,
+          outputs: [],
+          task_template: [
+            {
+              name: actionName,
+              module: 'ansible.builtin.include_role',
+              args: {
+                name: nameVal.roleName,
+                become_user: 'postgres'
+              }
+            }
+          ],
+          implementation: {
+            provider: 'ansible',
+            role: nameVal.roleName,
+            become_user: 'postgres',
+            estimatedDurationSec: 60
+          },
+          status: 'DRAFT',
+          overwrite: !!overwrite
+        };
+
+        const actionRes = addAction(actionPayload);
+        if (!actionRes.ok) {
+          return res.status(409).json({ error: actionRes.errors.join('; ') });
+        }
+
+        writeAudit('Action', actionId, actor, 'imported', 'success',
+          `Action "${actionId}" imported from Role "${nameVal.roleName}" with DRAFT status.`);
+
+        let createdBlueprint = null;
+        if (autoCreateBlueprint) {
+          const bpName = `${nameVal.roleName.replace(/_/g, '-')}-pipeline`;
+          const bpPayload = {
+            name: bpName,
+            version: '1.0.0',
+            owner: actor,
+            domain,
+            description: `Auto-generated pipeline for role ${nameVal.roleName}`,
+            steps: [{ stepIndex: 1, action: actionId, inputs: {} }],
+            compensation: { onFailure: 'NOTIFY_ONCALL' },
+            status: 'DRAFT'
+          };
+          const bpRes = addBlueprint(bpPayload);
+          if (bpRes.ok) {
+            createdBlueprint = bpRes.blueprint;
+            writeAudit('Blueprint', bpName, actor, 'created_auto', 'success',
+              `Auto-generated blueprint "${bpName}" for action "${actionId}"`);
+          }
+        }
+
+        res.status(201).json({
+          ok: true,
+          action: actionRes.action,
+          blueprint: createdBlueprint
+        });
+      } finally {
+        try {
+          if (fs.existsSync(tmpInstallDir)) {
+            fs.rmSync(tmpInstallDir, { recursive: true, force: true });
+          }
+        } catch (e) {}
+      }
+    } else {
+      // Standalone YAML
+      const actionPayload = {
+        id: actionId,
+        name: actionName,
+        domain,
+        capability,
+        description: description || 'Imported Standalone YAML Playbook',
+        inputs,
+        outputs: [],
+        task_template: null,
+        implementation: {
+          provider: 'ansible',
+          estimatedDurationSec: 60
+        },
+        status: 'DRAFT',
+        overwrite: !!overwrite
+      };
+      const actionRes = addAction(actionPayload);
+      if (!actionRes.ok) {
+        return res.status(409).json({ error: actionRes.errors.join('; ') });
+      }
+      res.status(201).json({ ok: true, action: actionRes.action });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===========================
 // BLUEPRINTS CRUD
 // ===========================
@@ -280,6 +566,18 @@ app.get('/api/blueprints/:name', (req, res) => {
 
 // POST /api/blueprints - Create new blueprint
 app.post('/api/blueprints', (req, res) => {
+  // Gate 4: Reject if any step action is in DRAFT status
+  const steps = req.body.steps || req.body.spec?.steps || [];
+  for (const step of steps) {
+    const actId = typeof step === 'string' ? step : step.action;
+    const act = getAction(actId);
+    if (act && act.status === 'DRAFT') {
+      return res.status(400).json({
+        error: `Không thể thêm Action '${act.id}' vào Blueprint: Action đang ở trạng thái DRAFT. Vui lòng duyệt (Publish) Action trước.`
+      });
+    }
+  }
+
   const result = addBlueprint(req.body);
   if (!result.ok) {
     return res.status(400).json({ error: result.errors.join('; ') });
@@ -291,6 +589,18 @@ app.post('/api/blueprints', (req, res) => {
 
 // PUT /api/blueprints/:name - Update blueprint
 app.put('/api/blueprints/:name', (req, res) => {
+  // Gate 4: Reject if any step action is in DRAFT status
+  const steps = req.body.steps || req.body.spec?.steps || [];
+  for (const step of steps) {
+    const actId = typeof step === 'string' ? step : step.action;
+    const act = getAction(actId);
+    if (act && act.status === 'DRAFT') {
+      return res.status(400).json({
+        error: `Không thể thêm Action '${act.id}' vào Blueprint: Action đang ở trạng thái DRAFT. Vui lòng duyệt (Publish) Action trước.`
+      });
+    }
+  }
+
   const result = updateBlueprint(req.params.name, req.body);
   if (!result.ok) {
     return res.status(400).json({ error: result.errors.join('; ') });
@@ -727,6 +1037,16 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
     }
   }
 
+  // Gate 4: Reject if any step action is in DRAFT status
+  for (const step of planSteps) {
+    const act = getAction(step.action);
+    if (act && act.status === 'DRAFT') {
+      return res.status(400).json({
+        error: `Không thể tạo Execution Plan: Action '${act.id}' đang ở trạng thái DRAFT. Vui lòng duyệt (Publish) Action trước khi thực thi.`
+      });
+    }
+  }
+
   const planId = `PLAN-${String(planCounter++).padStart(3, '0')}`;
   const plan = {
     planId,
@@ -845,7 +1165,7 @@ async function runOrchestrator(executionId, plan, changeId) {
       onLog: (line) => {
         execution.logTail += line + '\n';
       },
-      onStepProgress: (stepIdx, status) => {
+      onStepProgress: (stepIdx, status, details) => {
         if (execution.steps[stepIdx]) {
           execution.steps[stepIdx].status = status;
           if (status === 'RUNNING') {
@@ -856,8 +1176,15 @@ async function runOrchestrator(executionId, plan, changeId) {
             execution.steps[stepIdx].finishedAt = new Date().toISOString();
           }
         }
+        if (details) {
+          if (details.tasks) execution.tasks = details.tasks;
+          if (details.failureDiagnosis) execution.failureDiagnosis = details.failureDiagnosis;
+        }
       }
     });
+
+    if (result.tasks) execution.tasks = result.tasks;
+    if (result.failureDiagnosis) execution.failureDiagnosis = result.failureDiagnosis;
 
     if (result.success) {
       execution.status = 'completed';
@@ -941,6 +1268,16 @@ app.post('/api/plans/:id/execute', async (req, res) => {
   if (change.state === 'Executing') {
     return res.status(400).json({ error: 'Change is already executing' });
   }
+
+  // Gate 4: Reject if any step action is in DRAFT status
+  for (const step of plan.steps || []) {
+    const act = getAction(step.action);
+    if (act && act.status === 'DRAFT') {
+      return res.status(403).json({
+        error: `Thực thi bị chặn: Action '${act.id}' đang ở trạng thái DRAFT. Vui lòng duyệt (Publish) Action trước khi thực thi.`
+      });
+    }
+  }
   
   const executionId = `EXEC-${String(executionCounter++).padStart(3, '0')}`;
   
@@ -961,6 +1298,8 @@ app.post('/api/plans/:id/execute', async (req, res) => {
       finishedAt: null,
       logTail: ''
     })),
+    tasks: [],
+    failureDiagnosis: null,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     logTail: `[ORCHESTRATOR] Starting direct Ansible execution for ${plan.blueprint} (${plan.steps.length} actions)...\n`

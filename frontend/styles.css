@@ -966,14 +966,20 @@ select:hover {
 
 .step-tracker-item {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     padding: 0.85rem 1rem;
     background: #1f2937;
     border: 1px solid #374151;
     border-radius: 0.5rem;
     margin-bottom: 0.6rem;
     transition: all 0.3s ease;
+}
+
+.step-tracker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
 }
 
 .step-tracker-item.status-RUNNING {
@@ -1577,4 +1583,372 @@ select:hover {
     color: #fca5a5;
     border: 1px solid rgba(239, 68, 68, 0.3);
 }
+
+/* Subtask Checklist under Step Tracker */
+.subtask-list {
+    margin-top: 0.6rem;
+    padding-left: 2.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    animation: fadeIn 0.25s ease-in-out;
+}
+
+.subtask-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(17, 24, 39, 0.7);
+    border: 1px solid rgba(55, 65, 81, 0.6);
+    border-radius: 0.375rem;
+    padding: 0.4rem 0.65rem;
+    font-size: 0.78rem;
+    transition: all 0.2s ease;
+}
+
+.subtask-item:hover {
+    border-color: rgba(75, 85, 99, 0.8);
+    background: rgba(31, 41, 55, 0.8);
+}
+
+.subtask-item.status-RUNNING {
+    border-color: rgba(59, 130, 246, 0.5);
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.subtask-item.status-FAILED {
+    border-color: rgba(239, 68, 68, 0.5);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.subtask-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.subtask-icon {
+    font-size: 0.75rem;
+    width: 16px;
+    text-align: center;
+}
+
+.subtask-icon.spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.subtask-name {
+    color: #e5e7eb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.subtask-role-tag {
+    font-size: 0.68rem;
+    background: rgba(139, 92, 246, 0.2);
+    color: #c4b5fd;
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+    font-family: monospace;
+}
+
+.subtask-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.subtask-badge-ok {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.subtask-badge-changed {
+    background: rgba(245, 158, 11, 0.2);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.subtask-badge-running {
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    animation: pulse 1.5s infinite;
+}
+
+.subtask-badge-failed {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.subtask-badge-skipped {
+    background: rgba(107, 114, 128, 0.2);
+    color: #9ca3af;
+    border: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* Error Diagnosis Card */
+.error-diagnosis-card {
+    background: linear-gradient(135deg, rgba(30, 10, 15, 0.95), rgba(45, 15, 20, 0.9));
+    border: 1px solid rgba(239, 68, 68, 0.5) !important;
+    border-left: 5px solid #ef4444 !important;
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.15);
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.error-diag-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-bottom: 0.85rem;
+}
+
+.error-diag-icon {
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+.error-diag-badge {
+    display: inline-block;
+    background: #ef4444;
+    color: white;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.25rem;
+}
+
+.error-diag-title {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fee2e2;
+}
+
+.error-diag-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.error-diag-meta code {
+    background: rgba(0, 0, 0, 0.3);
+    color: #fca5a5;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    font-size: 0.78rem;
+}
+
+.error-diag-msg {
+    margin-bottom: 0.85rem;
+    font-size: 0.82rem;
+    color: #fca5a5;
+}
+
+.error-diag-msg pre {
+    background: #0f172a;
+    color: #f87171;
+    padding: 0.65rem 0.85rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    font-family: 'JetBrains Mono', monospace, Consolas;
+    font-size: 0.78rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-top: 0.35rem;
+}
+
+.error-diag-suggestion {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 0.375rem;
+    padding: 0.65rem 0.85rem;
+    color: #fef3c7;
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
+
+.error-diag-suggestion strong {
+    color: #fde047;
+}
+
+.error-diag-actions {
+    margin-top: 0.85rem;
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* ============================================================
+   ROLE & PLAYBOOK IMPORT WIZARD (PHASE 2 HARD SECURITY GATES)
+   ============================================================ */
+.wizard-steps-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-bottom: 1.75rem;
+    padding: 0.75rem 1.5rem;
+    background: #0f172a;
+    border-radius: 0.5rem;
+    border: 1px solid #1e293b;
+}
+
+.wizard-step-node {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #64748b;
+    transition: all 0.2s ease;
+}
+
+.wizard-step-node.active {
+    color: #60a5fa;
+}
+
+.wizard-step-node.completed {
+    color: #10b981;
+}
+
+.wizard-step-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    background: #1e293b;
+    color: #94a3b8;
+    border: 1px solid #334155;
+}
+
+.wizard-step-node.active .wizard-step-num {
+    background: #2563eb;
+    color: #ffffff;
+    border-color: #60a5fa;
+    box-shadow: 0 0 10px rgba(37, 99, 235, 0.5);
+}
+
+.wizard-step-node.completed .wizard-step-num {
+    background: #059669;
+    color: #ffffff;
+    border-color: #34d399;
+}
+
+.wizard-step-divider {
+    width: 40px;
+    height: 2px;
+    background: #334155;
+}
+
+.upload-dropzone {
+    border: 2px dashed #334155;
+    border-radius: 0.5rem;
+    padding: 2rem 1.5rem;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.6);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.upload-dropzone:hover {
+    border-color: #60a5fa;
+    background: rgba(30, 58, 138, 0.15);
+}
+
+.syntax-verdict-box {
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.syntax-verdict-pass {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #a7f3d0;
+}
+
+.syntax-verdict-fail {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+}
+
+.syntax-stderr-view {
+    background: #090d16;
+    color: #fca5a5;
+    border: 1px solid #3f1d24;
+    border-radius: 0.375rem;
+    padding: 0.75rem 1rem;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 0.75rem;
+    max-height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    margin-top: 0.65rem;
+}
+
+.security-gate-callout {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 0.5rem;
+    padding: 0.85rem 1rem;
+    margin: 1rem 0;
+    color: #fef3c7;
+    font-size: 0.82rem;
+}
+
+.badge-draft {
+    background: rgba(245, 158, 11, 0.18) !important;
+    color: #fbbf24 !important;
+    border: 1px solid rgba(245, 158, 11, 0.6) !important;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.2);
+}
+
+.badge-published {
+    background: rgba(16, 185, 129, 0.18) !important;
+    color: #34d399 !important;
+    border: 1px solid rgba(16, 185, 129, 0.5) !important;
+    font-weight: 700;
+}
+
 

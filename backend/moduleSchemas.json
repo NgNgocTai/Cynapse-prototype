@@ -474,5 +474,32 @@
         "description": "Trình thông dịch shell sử dụng để thực thi lệnh"
       }
     ]
+  },
+  {
+    "module": "ansible.builtin.include_role",
+    "displayName": "Ansible Role Runner",
+    "category": "Role & Playbook",
+    "riskDefault": "MEDIUM",
+    "description": "Nạp và thực thi trực tiếp một Ansible Role đóng gói sẵn trong hệ thống (như create_account)",
+    "fields": [
+      {
+        "name": "name",
+        "label": "Role Name",
+        "type": "string",
+        "required": true,
+        "default": "create_account",
+        "placeholder": "e.g., create_account",
+        "description": "Tên thư mục Role trong hệ thống"
+      },
+      {
+        "name": "become_user",
+        "label": "Escalate to User (become_user)",
+        "type": "string",
+        "required": false,
+        "default": "postgres",
+        "placeholder": "e.g., postgres",
+        "description": "User hệ điều hành để chạy role (mặc định: postgres)"
+      }
+    ]
   }
 ]

@@ -20,7 +20,7 @@ const state = {
     currentExecution: null,
     moduleSchemas: [],
     newActionDraft: null,
-    backendUrl: 'http://localhost:4000'
+    backendUrl: 'http://localhost:8000'
 };
 
 // Initialize App
@@ -317,13 +317,20 @@ function renderHomeView() {
 // ACTIONS VIEW — Dynamic CRUD (Composable Action Primitives)
 // ============================================================
 function renderActionsView() {
+    const publishedCount = state.actions.filter(a => a.status !== 'DRAFT').length;
+    const draftCount = state.actions.filter(a => a.status === 'DRAFT').length;
+
     return `
         <div class="view-header">
             <div>
                 <h2 class="card-title" style="margin: 0;">Action Catalog</h2>
                 <div style="font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem;">Atomic automation building blocks with input/output contracts & real Ansible task definitions</div>
             </div>
-            <div style="display: flex; gap: 1rem;">
+            <div style="display: flex; gap: 0.75rem;">
+                <button class="btn btn-secondary" onclick="openImportRoleModal()" style="background: rgba(139, 92, 246, 0.15); border: 1px solid #8b5cf6; color: #c4b5fd; font-weight: 600;">
+                    <span style="font-size: 1.1rem; margin-right: 0.4rem;">📥</span>
+                    Import Role / Playbook
+                </button>
                 <button class="btn btn-primary" onclick="openNewActionModal()" style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
                     <span style="font-size: 1.1rem; margin-right: 0.4rem;">⚡</span>
                     + Create Action Primitive
@@ -335,6 +342,7 @@ function renderActionsView() {
             <div class="metric-card">
                 <div class="metric-label">Total Actions</div>
                 <div class="metric-value">${state.actions.length}</div>
+                <div class="metric-subtitle"><span style="color: #34d399;">${publishedCount} published</span> · <span style="color: #fbbf24;">${draftCount} draft</span></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">With Task Definition</div>
@@ -362,6 +370,7 @@ function renderActionsView() {
                         <th>Capability</th>
                         <th>Provider</th>
                         <th>Ansible Module / Logic</th>
+                        <th>Status</th>
                         <th>Risk</th>
                         <th>Actions</th>
                     </tr>
@@ -371,6 +380,7 @@ function renderActionsView() {
                         const moduleName = action.task_template && action.task_template[0] && action.task_template[0].module 
                             ? action.task_template[0].module.replace('ansible.builtin.', '')
                             : (action.implementation?.provider || 'ansible');
+                        const isDraft = action.status === 'DRAFT';
                         return `
                         <tr>
                             <td>
@@ -388,9 +398,17 @@ function renderActionsView() {
                                     ${moduleName}
                                 </span>
                             </td>
+                            <td>
+                                ${isDraft 
+                                    ? `<span class="badge badge-draft">DRAFT</span>` 
+                                    : `<span class="badge badge-published">PUBLISHED</span>`}
+                            </td>
                             <td><span class="badge badge-${action.riskDefault === 'HIGH' || action.riskDefault === 'CRITICAL' ? 'danger' : action.riskDefault === 'MEDIUM' ? 'warning' : 'success'}">${action.riskDefault}</span></td>
                             <td>
-                                <div style="display: flex; gap: 0.4rem;">
+                                <div style="display: flex; gap: 0.4rem; align-items: center;">
+                                    ${isDraft ? `
+                                        <button class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem; background: #059669; border-color: #10b981;" onclick="publishActionItem('${action.id}')" title="Duyệt & Publish Action để cho phép gắn vào Blueprint">✓ Publish</button>
+                                    ` : ''}
                                     <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem;" onclick="openEditActionModal('${action.id}')">Edit</button>
                                     <button class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.75rem; color: #fca5a5;" onclick="confirmDeleteAction('${action.id}')">Delete</button>
                                 </div>
@@ -399,8 +417,8 @@ function renderActionsView() {
                         `;
                     }).join('') : `
                         <tr>
-                            <td colspan="8" style="text-align: center; color: #9ca3af; padding: 2.5rem;">
-                                No actions in catalog. Click "+ Create Action Primitive" to define your first action!
+                            <td colspan="9" style="text-align: center; color: #9ca3af; padding: 2.5rem;">
+                                No actions in catalog. Click "+ Create Action Primitive" or "Import Role / Playbook" to define your first action!
                             </td>
                         </tr>
                     `}
@@ -640,6 +658,10 @@ function renderExecutionsView() {
                 <!-- Orchestration Pipeline Steps -->
                 ${renderPipelineStepsTracker(change)}
                 
+                <div id="executionDiagnosisContainer">
+                    ${renderFailureDiagnosisCard(execution?.failureDiagnosis)}
+                </div>
+
                 <div class="card">
                     <h3 class="card-title" style="margin-bottom: 1rem;">Runtime Execution Log</h3>
                     <div class="code-block" id="executionLog" style="min-height: 250px; max-height: 450px; overflow-y: auto; color: #6ee7b7; font-family: monospace;">
@@ -709,6 +731,149 @@ ${state.executionLog.length > 0 ? state.executionLog.join('\n') : '[INFO] Ready 
     `;
 }
 
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderFailureDiagnosisCard(diag) {
+    if (!diag) return '';
+    return `
+        <div class="card error-diagnosis-card" id="errorDiagnosisCard">
+            <div class="error-diag-header">
+                <div class="error-diag-icon">⚠️</div>
+                <div>
+                    <div class="error-diag-badge">THỰC THI THẤT BẠI</div>
+                    <h4 class="error-diag-title">${escapeHtml(diag.title || 'Lỗi thực thi Ansible')}</h4>
+                </div>
+            </div>
+            <div class="error-diag-body">
+                <div class="error-diag-meta">
+                    <span><strong>Task bị lỗi:</strong> <code>${escapeHtml(diag.failedTask || 'Unknown')}</code></span>
+                    <span><strong>Máy chủ:</strong> <code>${escapeHtml(diag.host || 'Unknown')}</code></span>
+                    ${diag.isUnreachable ? `<span class="badge badge-danger">Host Unreachable</span>` : ''}
+                </div>
+                <div class="error-diag-msg">
+                    <strong>Chi tiết lỗi:</strong>
+                    <pre>${escapeHtml(diag.errorMessage || 'Không có chi tiết lỗi.')}</pre>
+                </div>
+                <div class="error-diag-suggestion">
+                    <span style="font-size: 1.2rem;">💡</span>
+                    <div>
+                        <strong>Khuyến nghị khắc phục:</strong>
+                        <div>${escapeHtml(diag.suggestion || 'Xem log chi tiết bên dưới.')}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="error-diag-actions">
+                <button class="btn btn-sm btn-secondary" onclick="jumpToFailedLog()" style="border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5;">
+                    🔍 Xem vị trí lỗi trong Log
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+window.jumpToFailedLog = function() {
+    const logEl = document.getElementById('executionLog');
+    if (!logEl) return;
+    const text = logEl.innerText || '';
+    const lines = text.split('\n');
+    let targetIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (/^(fatal|failed):/i.test(lines[i]) || lines[i].includes('FAILED!') || lines[i].includes('[FATAL ERROR]')) {
+            targetIdx = i;
+            break;
+        }
+    }
+    if (targetIdx !== -1) {
+        const lineHeight = 19;
+        logEl.scrollTop = Math.max(0, targetIdx * lineHeight - 60);
+        logEl.style.transition = 'box-shadow 0.3s ease';
+        logEl.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.6)';
+        setTimeout(() => {
+            logEl.style.boxShadow = '';
+        }, 2000);
+    } else {
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+};
+
+function renderSubtaskList(stepTasks) {
+    if (!stepTasks || stepTasks.length === 0) return '';
+    return `
+        <div class="subtask-list">
+            ${stepTasks.map(t => {
+                const st = (t.status || 'PENDING').toUpperCase();
+                const icon = st === 'OK' ? '✓' : st === 'CHANGED' ? '●' : st === 'RUNNING' ? '⟳' : st === 'FAILED' ? '✕' : '○';
+                const spinClass = st === 'RUNNING' ? 'spin' : '';
+                const badgeClass = st === 'OK' ? 'ok' : st === 'CHANGED' ? 'changed' : st === 'RUNNING' ? 'running' : st === 'FAILED' ? 'failed' : 'skipped';
+                
+                return `
+                    <div class="subtask-item status-${st}">
+                        <div class="subtask-info">
+                            <span class="subtask-icon ${spinClass}">${icon}</span>
+                            ${t.role ? `<span class="subtask-role-tag">${escapeHtml(t.role)}</span>` : ''}
+                            <span class="subtask-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
+                        </div>
+                        <span class="subtask-badge subtask-badge-${badgeClass}">${st}</span>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function renderStepTrackerItem(st, idx, execution) {
+    const action = state.actions.find(a => a.id === st.actionId);
+    const actName = action ? action.name : st.actionId;
+    const statusClass = st.status || 'PENDING';
+    const statusIcon = statusClass === 'SUCCESS' ? '✓' : statusClass === 'RUNNING' ? '⟳' : statusClass === 'FAILED' ? '✕' : '○';
+    const badgeClass = statusClass === 'SUCCESS' ? 'success' : statusClass === 'RUNNING' ? 'info pulse-glow' : statusClass === 'FAILED' ? 'danger' : 'secondary';
+    
+    // Sub-tasks for this step
+    const stepTasks = (execution && execution.tasks) ? execution.tasks.filter(t => t.stepIndex === idx) : [];
+
+    return `
+        <div class="step-tracker-item status-${statusClass}" id="step-item-${idx}">
+            <div class="step-tracker-header">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="composer-step-number" style="background: ${statusClass === 'SUCCESS' ? '#10b981' : statusClass === 'RUNNING' ? '#3b82f6' : statusClass === 'FAILED' ? '#ef4444' : '#4b5563'};">
+                        ${statusIcon}
+                    </span>
+                    <div>
+                        <div style="font-weight: 600; color: #f9fafb; font-size: 0.88rem;">
+                            Step ${idx + 1}: ${escapeHtml(actName)}
+                        </div>
+                        <div style="font-size: 0.72rem; color: #9ca3af; font-family: monospace;">
+                            ${escapeHtml(st.actionId)}
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    ${st.awxJobId ? `
+                        <span class="awx-badge" title="AWX Execution Job ID">
+                            🚀 AWX #${st.awxJobId}
+                        </span>
+                    ` : ''}
+                    <span class="awx-badge" style="border-color: #3b82f6; color: #93c5fd;" title="Ansible Playbook Play">
+                        📜 Action ${idx + 1}
+                    </span>
+                    <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
+                        ${statusClass}
+                    </span>
+                </div>
+            </div>
+            ${renderSubtaskList(stepTasks)}
+        </div>
+    `;
+}
+
 // ============================================================
 // PIPELINE STEPS TRACKER — Live Step Execution Tracker
 // ============================================================
@@ -747,39 +912,7 @@ function renderPipelineStepsTracker(change) {
                 <span class="badge badge-info" style="font-size: 0.75rem;">${steps.length} step(s)</span>
             </div>
             <div id="pipelineStepsList">
-                ${steps.map((st, idx) => {
-                    const action = state.actions.find(a => a.id === st.actionId);
-                    const actName = action ? action.name : st.actionId;
-                    const statusClass = st.status || 'PENDING';
-                    const statusIcon = statusClass === 'SUCCESS' ? '✓' : statusClass === 'RUNNING' ? '⟳' : statusClass === 'FAILED' ? '✕' : '○';
-                    const badgeClass = statusClass === 'SUCCESS' ? 'success' : statusClass === 'RUNNING' ? 'info pulse-glow' : statusClass === 'FAILED' ? 'danger' : 'secondary';
-                    
-                    return `
-                        <div class="step-tracker-item status-${statusClass}" id="step-item-${idx}">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span class="composer-step-number" style="background: ${statusClass === 'SUCCESS' ? '#10b981' : statusClass === 'RUNNING' ? '#3b82f6' : statusClass === 'FAILED' ? '#ef4444' : '#4b5563'};">
-                                    ${statusIcon}
-                                </span>
-                                <div>
-                                    <div style="font-weight: 600; color: #f9fafb; font-size: 0.88rem;">
-                                        Step ${idx + 1}: ${actName}
-                                    </div>
-                                    <div style="font-size: 0.72rem; color: #9ca3af; font-family: monospace;">
-                                        ${st.actionId}
-                                    </div>
-                                </div>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <span class="awx-badge" style="border-color: #3b82f6; color: #93c5fd;" title="Ansible Playbook Play">
-                                    📜 Action ${idx + 1}
-                                </span>
-                                <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
-                                    ${statusClass}
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                }).join('')}
+                ${steps.map((st, idx) => renderStepTrackerItem(st, idx, execution)).join('')}
             </div>
         </div>
     `;
@@ -788,43 +921,14 @@ function renderPipelineStepsTracker(change) {
 function updatePipelineStepsDOM(execution) {
     if (!execution || !execution.steps) return;
     const container = document.getElementById('pipelineStepsList');
-    if (!container) return;
+    if (container) {
+        container.innerHTML = execution.steps.map((st, idx) => renderStepTrackerItem(st, idx, execution)).join('');
+    }
 
-    container.innerHTML = execution.steps.map((st, idx) => {
-        const action = state.actions.find(a => a.id === st.actionId);
-        const actName = action ? action.name : st.actionId;
-        const statusClass = st.status || 'PENDING';
-        const statusIcon = statusClass === 'SUCCESS' ? '✓' : statusClass === 'RUNNING' ? '⟳' : statusClass === 'FAILED' ? '✕' : '○';
-        const badgeClass = statusClass === 'SUCCESS' ? 'success' : statusClass === 'RUNNING' ? 'info pulse-glow' : statusClass === 'FAILED' ? 'danger' : 'secondary';
-        
-        return `
-            <div class="step-tracker-item status-${statusClass}" id="step-item-${idx}">
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    <span class="composer-step-number" style="background: ${statusClass === 'SUCCESS' ? '#10b981' : statusClass === 'RUNNING' ? '#3b82f6' : statusClass === 'FAILED' ? '#ef4444' : '#4b5563'};">
-                        ${statusIcon}
-                    </span>
-                    <div>
-                        <div style="font-weight: 600; color: #f9fafb; font-size: 0.88rem;">
-                            Step ${idx + 1}: ${actName}
-                        </div>
-                        <div style="font-size: 0.72rem; color: #9ca3af; font-family: monospace;">
-                            ${st.actionId}
-                        </div>
-                    </div>
-                </div>
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    ${st.awxJobId ? `
-                        <span class="awx-badge" title="AWX Execution Job ID">
-                            🚀 AWX #${st.awxJobId}
-                        </span>
-                    ` : ''}
-                    <span class="badge badge-${badgeClass}" style="min-width: 80px; text-align: center; font-size: 0.75rem;">
-                        ${st.status}
-                    </span>
-                </div>
-            </div>
-        `;
-    }).join('');
+    const diagContainer = document.getElementById('executionDiagnosisContainer');
+    if (diagContainer) {
+        diagContainer.innerHTML = renderFailureDiagnosisCard(execution.failureDiagnosis);
+    }
 }
 
 // ===========================
@@ -1821,7 +1925,7 @@ function renderActionCreatorModal() {
                             <div>
                                 <label class="form-label">Capability *</label>
                                 <select id="actionCapabilityInput" class="form-input" onchange="state.newActionDraft.capability = this.value;">
-                                    ${['SERVICE_RESTART', 'HEALTH_CHECK', 'POST_VERIFY', 'FILE_CONFIG', 'CLI_COMMAND', 'CUSTOM'].map(c => `<option value="${c}" ${draft.capability === c ? 'selected' : ''}>${c}</option>`).join('')}
+                                    ${['DATABASE_ADMIN', 'SERVICE_RESTART', 'HEALTH_CHECK', 'POST_VERIFY', 'FILE_CONFIG', 'CLI_COMMAND', 'BACKUP_RESTORE', 'CUSTOM'].map(c => `<option value="${c}" ${draft.capability === c ? 'selected' : ''}>${c}</option>`).join('')}
                                 </select>
                             </div>
                             <div>
@@ -2120,10 +2224,15 @@ function updateActionTaskYamlPreview() {
     const params = draft.moduleParams || {};
     const register = draft.taskRegister || '';
 
-    let yaml = `- name: "${taskName}"\n  ${moduleName}:\n`;
-    for (const [k, v] of Object.entries(params)) {
-        if (v !== '' && v !== null && v !== undefined) {
-            yaml += `    ${k}: ${typeof v === 'number' || typeof v === 'boolean' ? v : `"${v}"`}\n`;
+    let yaml = '';
+    if (moduleName === 'ansible.builtin.include_role') {
+        yaml = `- name: "${taskName}"\n  ansible.builtin.include_role:\n    name: "${params.name || 'create_account'}"\n  become: true\n  become_user: "${params.become_user || 'postgres'}"\n`;
+    } else {
+        yaml = `- name: "${taskName}"\n  ${moduleName}:\n`;
+        for (const [k, v] of Object.entries(params)) {
+            if (v !== '' && v !== null && v !== undefined) {
+                yaml += `    ${k}: ${typeof v === 'number' || typeof v === 'boolean' ? v : `"${v}"`}\n`;
+            }
         }
     }
     if (register) {
@@ -2182,7 +2291,11 @@ async function saveNewActionFromDraft() {
         task_template: [ taskObj ],
         implementation: {
             provider: 'ansible',
-            estimatedDurationSec: 60
+            estimatedDurationSec: 60,
+            ...(draft.selectedModule === 'ansible.builtin.include_role' ? {
+                role: draft.moduleParams?.name || 'create_account',
+                become_user: draft.moduleParams?.become_user || 'postgres'
+            } : {})
         },
         verification: {
             type: 'embedded',
@@ -2375,6 +2488,582 @@ async function confirmDeleteAction(actionId) {
         renderView('actions');
     } catch (error) {
         alert('Failed to delete action: ' + error.message);
+    }
+}
+
+// ============================================================
+// ACTION PUBLISH WORKFLOW (GATE 4 & GOVERNANCE)
+// ============================================================
+async function publishActionItem(actionId) {
+    const action = state.actions.find(a => a.id === actionId);
+    if (!action) return;
+
+    const confirmed = confirm(
+        `Xác nhận Publish Action "${action.name}" (${action.id})?\n\n` +
+        `• Trạng thái sẽ chuyển từ DRAFT → PUBLISHED.\n` +
+        `• Action sẽ sẵn sàng để gắn vào Blueprints và tạo Change thực thi trên cụm máy chủ thật (db01).\n` +
+        `• Hành động này sẽ được ghi nhận vào Audit Log hệ thống.`
+    );
+    if (!confirmed) return;
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/actions/${actionId}/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ actor: state.currentRole || 'operator' })
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(`Lỗi khi Publish Action: ${err.error || res.statusText}`);
+            return;
+        }
+
+        const data = await res.json();
+        // Update local state
+        const idx = state.actions.findIndex(a => a.id === actionId);
+        if (idx !== -1 && data.action) {
+            state.actions[idx] = data.action;
+        } else if (idx !== -1) {
+            state.actions[idx].status = 'PUBLISHED';
+        }
+
+        // Re-render Actions view
+        renderView('actions');
+        alert(`✅ Đã Publish thành công Action "${action.name}"! Trạng thái hiện tại: PUBLISHED.`);
+    } catch (err) {
+        alert(`Lỗi mạng khi Publish Action: ${err.message}`);
+    }
+}
+
+// ============================================================
+// 2-STEP SELF-SERVICE IMPORT WIZARD (6 HARD SECURITY GATES)
+// ============================================================
+function openImportRoleModal() {
+    state.importWizard = {
+        step: 1, // 1: Upload & Syntax Check, 2: Preview & Catalog Registration
+        type: 'role', // 'role' (zip) or 'playbook' (yaml)
+        roleName: '',
+        displayName: '',
+        domain: 'CNTT',
+        capability: 'DATABASE_ADMIN',
+        riskDefault: 'MEDIUM',
+        description: '',
+        fileBase64: null,
+        fileName: '',
+        playbookContent: '',
+        autoCreateBlueprint: false, // GATE 5: MUST BE DEFAULT OFF / UNCHECKED
+        overwrite: false,
+        validating: false,
+        validationResult: null,
+        errorMessage: null
+    };
+
+    renderImportRoleModal();
+}
+
+function renderImportRoleModal() {
+    const wizard = state.importWizard;
+    if (!wizard) return;
+
+    let contentHtml = '';
+
+    if (wizard.step === 1) {
+        contentHtml = `
+            <!-- STEP 1: UPLOAD & SYNTAX CHECK -->
+            <div style="margin-bottom: 1.25rem;">
+                <label class="form-label">Loại tài nguyên muốn Import *</label>
+                <div style="display: flex; gap: 1rem; margin-top: 0.25rem;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: #e4e4e7;">
+                        <input type="radio" name="importType" value="role" ${wizard.type === 'role' ? 'checked' : ''} onchange="setImportType('role')">
+                        <span>📦 Ansible Role (File .zip)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: #e4e4e7;">
+                        <input type="radio" name="importType" value="playbook" ${wizard.type === 'playbook' ? 'checked' : ''} onchange="setImportType('playbook')">
+                        <span>📄 Playbook độc lập (.yml / .yaml)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                <div>
+                    <label class="form-label">
+                        Role Identifier / Tên thư mục *
+                        <span style="font-size: 0.72rem; color: #9ca3af;">(Gate 1: snake_case <code>^[a-z0-9_]+$</code>)</span>
+                    </label>
+                    <input type="text" id="importRoleName" class="form-input" 
+                           value="${wizard.roleName || ''}" 
+                           placeholder="ví dụ: create_account, patroni_setup"
+                           oninput="updateImportField('roleName', this.value)">
+                </div>
+                <div>
+                    <label class="form-label">Tên hiển thị Action (Display Name) *</label>
+                    <input type="text" id="importDisplayName" class="form-input" 
+                           value="${wizard.displayName || ''}" 
+                           placeholder="ví dụ: PostgreSQL Account Provisioning"
+                           oninput="updateImportField('displayName', this.value)">
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                <div>
+                    <label class="form-label">Phân vùng Domain</label>
+                    <select id="importDomain" class="form-select" onchange="updateImportField('domain', this.value)">
+                        <option value="CNTT" ${wizard.domain === 'CNTT' ? 'selected' : ''}>CNTT (Database / Server)</option>
+                        <option value="MẠNG" ${wizard.domain === 'MẠNG' ? 'selected' : ''}>MẠNG (Network / Core)</option>
+                        <option value="TỰ ĐỘNG HÓA" ${wizard.domain === 'TỰ ĐỘNG HÓA' ? 'selected' : ''}>TỰ ĐỘNG HÓA (Automation)</option>
+                        <option value="AN NINH" ${wizard.domain === 'AN NINH' ? 'selected' : ''}>AN NINH (Security / Compliance)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Năng lực (Capability)</label>
+                    <input type="text" id="importCapability" class="form-input" 
+                           value="${wizard.capability || ''}" 
+                           placeholder="DATABASE_ADMIN"
+                           oninput="updateImportField('capability', this.value)">
+                </div>
+                <div>
+                    <label class="form-label">Mức rủi ro mặc định (Risk)</label>
+                    <select id="importRisk" class="form-select" onchange="updateImportField('riskDefault', this.value)">
+                        <option value="LOW" ${wizard.riskDefault === 'LOW' ? 'selected' : ''}>LOW</option>
+                        <option value="MEDIUM" ${wizard.riskDefault === 'MEDIUM' ? 'selected' : ''}>MEDIUM</option>
+                        <option value="HIGH" ${wizard.riskDefault === 'HIGH' ? 'selected' : ''}>HIGH</option>
+                        <option value="CRITICAL" ${wizard.riskDefault === 'CRITICAL' ? 'selected' : ''}>CRITICAL</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 1.25rem;">
+                <label class="form-label">Mô tả mục đích</label>
+                <input type="text" id="importDescription" class="form-input" 
+                       value="${wizard.description || ''}" 
+                       placeholder="Mô tả tác vụ, quyền hạn và phạm vi tác động..."
+                       oninput="updateImportField('description', this.value)">
+            </div>
+
+            <!-- Upload Dropzone -->
+            <div style="margin-bottom: 1.25rem;">
+                <label class="form-label">
+                    ${wizard.type === 'role' ? 'File Zip Role Ansible (.zip) *' : 'File Playbook YAML hoặc Nội dung Playbook *'}
+                </label>
+                
+                <div class="upload-dropzone" onclick="document.getElementById('importFileInput').click()">
+                    <input type="file" id="importFileInput" style="display: none;" 
+                           accept="${wizard.type === 'role' ? '.zip' : '.yml,.yaml'}" 
+                           onchange="handleImportFileSelect(event)">
+                    <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">${wizard.fileName ? '📦' : '📂'}</div>
+                    <div style="font-weight: 600; color: #f3f4f6;">
+                        ${wizard.fileName ? `Đã chọn: ${wizard.fileName}` : 'Bấm vào đây để chọn file tải lên'}
+                    </div>
+                    <div style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.35rem;">
+                        ${wizard.type === 'role' 
+                            ? 'Cấu trúc zip hợp lệ (tasks/main.yml, defaults/main.yml, vars/main.yml). Gate 1 sẽ kiểm tra Zip-Slip và chuẩn hóa LF.' 
+                            : 'File playbook hợp lệ hoặc dán YAML trực tiếp bên dưới.'}
+                    </div>
+                </div>
+            </div>
+
+            ${wizard.type === 'playbook' ? `
+                <div style="margin-bottom: 1.25rem;">
+                    <label class="form-label">Hoặc Soạn / Dán mã YAML Playbook:</label>
+                    <textarea id="importPlaybookYaml" class="form-input" style="font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.82rem; height: 160px;" 
+                              placeholder="---\n- name: Playbook name\n  hosts: all\n  tasks:\n    - name: Task 1\n      ansible.builtin.debug:\n        msg: Hello"
+                              oninput="updateImportField('playbookContent', this.value)">${wizard.playbookContent || ''}</textarea>
+                </div>
+            ` : ''}
+
+            <!-- Error Verdict Box if validation failed -->
+            ${wizard.validationResult && !wizard.validationResult.pass ? `
+                <div class="syntax-verdict-box syntax-verdict-fail">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: #f87171;">
+                        <span style="font-size: 1.2rem;">✕</span>
+                        Gate 2 Thất bại: Cú pháp hoặc Cấu trúc Role không hợp lệ
+                    </div>
+                    <div style="font-size: 0.8rem; margin-top: 0.35rem;">
+                        Trình kiểm tra cú pháp động <code>ansible-playbook --syntax-check</code> trả về lỗi (exit code: ${wizard.validationResult.exitCode || 1}):
+                    </div>
+                    <div class="syntax-stderr-view">${escapeHtml(wizard.validationResult.output || wizard.validationResult.error || 'Lỗi không xác định')}</div>
+                </div>
+            ` : ''}
+
+            ${wizard.errorMessage ? `
+                <div class="syntax-verdict-box syntax-verdict-fail" style="margin-top: 0.75rem;">
+                    <strong>✕ Lỗi:</strong> ${escapeHtml(wizard.errorMessage)}
+                </div>
+            ` : ''}
+        `;
+    } else {
+        // STEP 2: PREVIEW & CATALOG REGISTRATION
+        const vr = wizard.validationResult || {};
+        const detectedTasks = vr.tasks || [];
+        const detectedInputs = vr.inputs || [];
+
+        contentHtml = `
+            <!-- STEP 2: VERDICT & PREVIEW -->
+            <div class="syntax-verdict-box syntax-verdict-pass">
+                <div style="display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.05rem;">
+                    <span style="font-size: 1.3rem;">✓</span>
+                    Gate 2 VƯỢT QUA: Kiểm tra cú pháp thành công (Exit Code 0)
+                </div>
+                <div style="font-size: 0.82rem; margin-top: 0.35rem; color: #6ee7b7;">
+                    File đã được kiểm tra tính hợp lệ qua lệnh thực thi độc lập <code>ansible-playbook --syntax-check</code>.
+                </div>
+            </div>
+
+            <!-- Gate 4 & Security Callout -->
+            <div class="security-gate-callout">
+                <div style="display: flex; align-items: flex-start; gap: 0.6rem;">
+                    <span style="font-size: 1.25rem;">🔒</span>
+                    <div>
+                        <strong style="color: #fbbf24;">Gate 4 — Lưu trữ an toàn ở trạng thái DRAFT:</strong>
+                        <div style="margin-top: 0.25rem; line-height: 1.45;">
+                            Action mới sẽ được đăng ký vào Catalog với trạng thái <strong style="color: #fbbf24;">DRAFT</strong>.
+                            Hệ thống tự động khóa không cho phép gắn Action DRAFT vào Blueprint hoặc thực thi thật trên máy chủ cho tới khi được kiểm duyệt và Publish bởi người có thẩm quyền.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Role / Action Preview Card -->
+            <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 0.5rem; padding: 1.25rem; margin-bottom: 1.25rem;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                    <div>
+                        <span style="color: #9ca3af; font-size: 0.75rem; text-transform: uppercase;">Action ID sinh tự động</span>
+                        <div style="font-weight: 700; color: #60a5fa; font-family: monospace; font-size: 0.95rem;">
+                            ACTION_ROLE_${wizard.roleName.toUpperCase()}
+                        </div>
+                    </div>
+                    <div>
+                        <span style="color: #9ca3af; font-size: 0.75rem; text-transform: uppercase;">Tên hiển thị & Domain</span>
+                        <div style="font-weight: 600; color: #f3f4f6;">
+                            ${wizard.displayName} <span class="badge badge-info" style="margin-left: 0.5rem;">${wizard.domain}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detected Tasks -->
+                <div style="margin-top: 0.75rem;">
+                    <span style="color: #9ca3af; font-size: 0.75rem; text-transform: uppercase;">Các Task con phát hiện được trong Role (${detectedTasks.length}):</span>
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem;">
+                        ${detectedTasks.length > 0 ? detectedTasks.map((t, idx) => `
+                            <span class="badge" style="background: #1e293b; color: #93c5fd; border: 1px solid #3b82f6; font-size: 0.72rem;">
+                                ${idx + 1}. ${escapeHtml(t.name || t.module || 'Task')}
+                            </span>
+                        `).join('') : '<span style="color: #9ca3af; font-size: 0.8rem;">(Không có task con nào hoặc playbook phẳng)</span>'}
+                    </div>
+                </div>
+
+                <!-- Gate 3 Extracted Inputs -->
+                <div style="margin-top: 1.25rem;">
+                    <span style="color: #9ca3af; font-size: 0.75rem; text-transform: uppercase;">Gate 3 — Biến tham số tự động bóc tách (Jinja2 Contract) (${detectedInputs.length}):</span>
+                    ${detectedInputs.length > 0 ? `
+                        <div style="max-height: 160px; overflow-y: auto; margin-top: 0.5rem; border: 1px solid #1e293b; border-radius: 0.375rem;">
+                            <table class="table" style="margin: 0; font-size: 0.78rem;">
+                                <thead style="background: #1e293b;">
+                                    <tr>
+                                        <th style="padding: 0.4rem 0.6rem;">Tên biến</th>
+                                        <th style="padding: 0.4rem 0.6rem;">Kiểu dữ liệu</th>
+                                        <th style="padding: 0.4rem 0.6rem;">Giá trị mặc định</th>
+                                        <th style="padding: 0.4rem 0.6rem;">Bắt buộc</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${detectedInputs.map(inp => `
+                                        <tr>
+                                            <td style="padding: 0.35rem 0.6rem;"><code style="color: #93c5fd;">${inp.name}</code></td>
+                                            <td style="padding: 0.35rem 0.6rem;"><span style="color: #cbd5e1;">${inp.type || 'string'}</span></td>
+                                            <td style="padding: 0.35rem 0.6rem;"><span style="color: #a7f3d0; font-family: monospace;">${inp.default !== undefined ? String(inp.default) : '—'}</span></td>
+                                            <td style="padding: 0.35rem 0.6rem;">${inp.required ? '<span style="color: #f87171;">Có</span>' : '<span style="color: #9ca3af;">Không</span>'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : '<div style="color: #9ca3af; font-size: 0.8rem; margin-top: 0.35rem;">Không phát hiện tham số Jinja2 trong defaults/vars.</div>'}
+                </div>
+            </div>
+
+            <!-- GATE 5: Auto-Blueprint Checkbox (MUST DEFAULT OFF / UNCHECKED) -->
+            <div style="background: #0b1329; border: 1px solid #1d4ed8; border-radius: 0.5rem; padding: 0.85rem 1rem; margin-bottom: 1rem;">
+                <label style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; color: #e4e4e7; font-weight: 500;">
+                    <input type="checkbox" id="importAutoBlueprint" 
+                           ${wizard.autoCreateBlueprint ? 'checked' : ''} 
+                           onchange="updateImportField('autoCreateBlueprint', this.checked)">
+                    <span>Gate 5: Tự động tạo Blueprint mẫu tương ứng cho Action này</span>
+                </label>
+                <div style="font-size: 0.76rem; color: #93c5fd; margin-top: 0.3rem; margin-left: 1.8rem;">
+                    (Mặc định TẮT. Chỉ bật khi bạn muốn tạo ngay 1 workflow bọc quanh Action này ở trạng thái DRAFT.)
+                </div>
+            </div>
+
+            <!-- Overwrite Checkbox if needed -->
+            <div style="margin-bottom: 1rem; padding-left: 0.25rem;">
+                <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; color: #9ca3af; font-size: 0.82rem;">
+                    <input type="checkbox" id="importOverwrite" 
+                           ${wizard.overwrite ? 'checked' : ''} 
+                           onchange="updateImportField('overwrite', this.checked)">
+                    <span>Cho phép ghi đè nếu đã tồn tại Action ở trạng thái DRAFT trùng ID</span>
+                </label>
+            </div>
+
+            ${wizard.errorMessage ? `
+                <div class="syntax-verdict-box syntax-verdict-fail">
+                    <strong>✕ Lỗi Import:</strong> ${escapeHtml(wizard.errorMessage)}
+                </div>
+            ` : ''}
+        `;
+    }
+
+    const modal = `
+        <div class="modal-overlay" onclick="closeModal(event)">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 780px; width: 95%;">
+                <div class="modal-header">
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="font-size: 1.5rem;">📥</span>
+                        <div>
+                            <h2 class="modal-title" style="margin: 0; font-size: 1.25rem;">Import Ansible Role / Playbook</h2>
+                            <div style="font-size: 0.8rem; color: #9ca3af;">Quy trình Self-Service với 6 Chốt Chặn An Toàn (Production Ready)</div>
+                        </div>
+                    </div>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                
+                <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+                    <!-- Wizard Stepper Indicator -->
+                    <div class="wizard-steps-indicator">
+                        <div class="wizard-step-node ${wizard.step === 1 ? 'active' : 'completed'}">
+                            <div class="wizard-step-num">${wizard.step > 1 ? '✓' : '1'}</div>
+                            <span>1. Tải lên & Kiểm tra Cú pháp</span>
+                        </div>
+                        <div class="wizard-step-divider"></div>
+                        <div class="wizard-step-node ${wizard.step === 2 ? 'active' : ''}">
+                            <div class="wizard-step-num">2</div>
+                            <span>2. Xem trước & Lưu DRAFT</span>
+                        </div>
+                    </div>
+
+                    ${contentHtml}
+                </div>
+
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <button class="btn btn-secondary" onclick="closeModal()">Hủy bỏ</button>
+                    </div>
+                    <div style="display: flex; gap: 0.75rem;">
+                        ${wizard.step === 2 ? `
+                            <button class="btn btn-secondary" onclick="backToImportStep1()">← Quay lại</button>
+                            <button class="btn btn-primary" onclick="runImportStep2Save()" style="background: #059669; border-color: #10b981;">
+                                ✓ Hoàn tất Import (Lưu DRAFT)
+                            </button>
+                        ` : `
+                            <button class="btn btn-primary" onclick="runImportStep1Validate()" ${wizard.validating ? 'disabled' : ''} style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
+                                ${wizard.validating ? `
+                                    <span style="display: inline-block; animation: spin 0.8s linear infinite; margin-right: 0.4rem;">⟳</span>
+                                    Đang chạy Syntax Check...
+                                ` : 'Tiếp tục: Kiểm tra Cú pháp →'}
+                            </button>
+                        `}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+function setImportType(type) {
+    if (!state.importWizard) return;
+    state.importWizard.type = type;
+    renderImportRoleModal();
+}
+
+function updateImportField(field, value) {
+    if (!state.importWizard) return;
+    state.importWizard[field] = value;
+}
+
+function backToImportStep1() {
+    if (!state.importWizard) return;
+    state.importWizard.step = 1;
+    state.importWizard.errorMessage = null;
+    renderImportRoleModal();
+}
+
+function handleImportFileSelect(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file || !state.importWizard) return;
+
+    state.importWizard.fileName = file.name;
+
+    // Auto-infer roleName and displayName if empty
+    const baseName = file.name.replace(/\.[^/.]+$/, '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    if (!state.importWizard.roleName) {
+        state.importWizard.roleName = baseName;
+    }
+    if (!state.importWizard.displayName) {
+        // Convert to Title Case
+        state.importWizard.displayName = baseName
+            .split('_')
+            .filter(Boolean)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
+    }
+
+    const reader = new FileReader();
+
+    if (state.importWizard.type === 'role') {
+        reader.onload = function(e) {
+            const dataUrl = e.target.result;
+            // Extract base64 part
+            const commaIdx = dataUrl.indexOf(',');
+            state.importWizard.fileBase64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+            renderImportRoleModal();
+        };
+        reader.readAsDataURL(file);
+    } else {
+        reader.onload = function(e) {
+            state.importWizard.playbookContent = e.target.result;
+            renderImportRoleModal();
+        };
+        reader.readAsText(file);
+    }
+}
+
+async function runImportStep1Validate() {
+    const wizard = state.importWizard;
+    if (!wizard) return;
+
+    wizard.errorMessage = null;
+
+    // Gate 1 Form Validation
+    const roleName = (wizard.roleName || '').trim();
+    if (!roleName) {
+        wizard.errorMessage = 'Vui lòng nhập Role Identifier.';
+        renderImportRoleModal();
+        return;
+    }
+
+    // Strict Gate 1 regex
+    if (!/^[a-z0-9_]+$/.test(roleName)) {
+        wizard.errorMessage = 'Gate 1 Thất bại: Role Identifier chỉ được chứa chữ thường (a-z), chữ số (0-9) và dấu gạch dưới (_). Tuyệt đối không chứa dấu cách, dấu chấm, slash hay ký tự đặc biệt.';
+        renderImportRoleModal();
+        return;
+    }
+
+    if (!wizard.displayName || !wizard.displayName.trim()) {
+        wizard.errorMessage = 'Vui lòng nhập Tên hiển thị Action (Display Name).';
+        renderImportRoleModal();
+        return;
+    }
+
+    if (wizard.type === 'role' && !wizard.fileBase64) {
+        wizard.errorMessage = 'Vui lòng chọn file zip của Ansible Role.';
+        renderImportRoleModal();
+        return;
+    }
+
+    if (wizard.type === 'playbook' && !wizard.playbookContent && !wizard.fileBase64) {
+        wizard.errorMessage = 'Vui lòng tải lên file playbook hoặc nhập mã YAML.';
+        renderImportRoleModal();
+        return;
+    }
+
+    // Set validating spinner
+    wizard.validating = true;
+    renderImportRoleModal();
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/roles/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                roleName: roleName,
+                isRole: wizard.type === 'role',
+                fileBase64: wizard.fileBase64,
+                playbookContent: wizard.playbookContent
+            })
+        });
+
+        const data = await res.json();
+        wizard.validating = false;
+
+        if (!res.ok || data.pass === false) {
+            wizard.validationResult = {
+                pass: false,
+                exitCode: data.exitCode || 1,
+                output: data.output || data.error || 'Syntax check failed'
+            };
+            wizard.errorMessage = data.error || 'Kiểm tra cú pháp thất bại (Exit code != 0). Vui lòng xem chi tiết lỗi bên dưới.';
+            renderImportRoleModal();
+            return;
+        }
+
+        // Passed Gate 1 & Gate 2!
+        wizard.validationResult = data;
+        wizard.step = 2;
+        renderImportRoleModal();
+    } catch (err) {
+        wizard.validating = false;
+        wizard.errorMessage = 'Lỗi kết nối tới backend khi kiểm tra cú pháp: ' + err.message;
+        renderImportRoleModal();
+    }
+}
+
+async function runImportStep2Save() {
+    const wizard = state.importWizard;
+    if (!wizard) return;
+
+    wizard.errorMessage = null;
+
+    try {
+        const res = await fetch(`${state.backendUrl}/api/roles/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                roleName: wizard.roleName.trim(),
+                displayName: wizard.displayName.trim(),
+                domain: wizard.domain,
+                capability: wizard.capability.trim() || 'AUTOMATION',
+                riskDefault: wizard.riskDefault || 'MEDIUM',
+                description: wizard.description.trim(),
+                fileBase64: wizard.fileBase64,
+                isRole: wizard.type === 'role',
+                playbookContent: wizard.playbookContent,
+                createBlueprint: Boolean(wizard.autoCreateBlueprint), // GATE 5
+                overwrite: Boolean(wizard.overwrite)
+            })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            wizard.errorMessage = data.error || `Lỗi từ hệ thống (HTTP ${res.status})`;
+            renderImportRoleModal();
+            return;
+        }
+
+        // Refresh actions and blueprints in frontend
+        const actionsRes = await fetch(`${state.backendUrl}/api/actions`);
+        if (actionsRes.ok) state.actions = await actionsRes.json();
+
+        const bpRes = await fetch(`${state.backendUrl}/api/blueprints`);
+        if (bpRes.ok) state.blueprints = await bpRes.json();
+
+        // Close modal and re-render Actions View
+        closeModal();
+        renderView('actions');
+
+        alert(
+            `🎉 ĐÃ IMPORT THÀNH CÔNG!\n\n` +
+            `• Action ID: ${data.action.id}\n` +
+            `• Trạng thái: ${data.action.status} (Gate 4)\n` +
+            (data.blueprint ? `• Blueprint mẫu sinh kèm: ${data.blueprint.metadata.name} (DRAFT)\n` : '') +
+            `\nAction hiện đang ở trạng thái DRAFT để ngăn thực thi ngoài ý muốn. Vui lòng kiểm tra và bấm "✓ Publish" khi sẵn sàng.`
+        );
+    } catch (err) {
+        wizard.errorMessage = 'Lỗi kết nối khi lưu Action: ' + err.message;
+        renderImportRoleModal();
     }
 }
 
@@ -4299,6 +4988,7 @@ async function runExecution(changeId) {
                     }
                     
                     updateExecutionLog();
+                    updatePipelineStepsDOM(status);
                     // Update header badge & buttons in-place (avoid full re-render which would "jump" the page)
                     const headerActions = document.querySelector('.execution-actions') || document.querySelector('.view-header > div:last-child');
                     if (headerActions && change) {

@@ -93,7 +93,8 @@
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "LOW"
+      "riskDefault": "LOW",
+      "status": "PUBLISHED"
     },
     {
       "id": "DB_RESTART_CYCLE",
@@ -199,7 +200,8 @@
         "action": "NOTIFY_ONCALL",
         "note": "Reboot server không rollback được - leo thang on-call khi gặp lỗi"
       },
-      "riskDefault": "HIGH"
+      "riskDefault": "HIGH",
+      "status": "PUBLISHED"
     },
     {
       "id": "DB_POST_VERIFY",
@@ -287,7 +289,8 @@
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "LOW"
+      "riskDefault": "LOW",
+      "status": "PUBLISHED"
     },
     {
       "id": "DISK_SPACE_CHECK",
@@ -343,7 +346,8 @@
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "LOW"
+      "riskDefault": "LOW",
+      "status": "PUBLISHED"
     },
     {
       "id": "DISK_CLEANUP_TMP",
@@ -401,7 +405,8 @@
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "MEDIUM"
+      "riskDefault": "MEDIUM",
+      "status": "PUBLISHED"
     },
     {
       "id": "DISK_VERIFY_AFTER",
@@ -449,21 +454,15 @@
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
       },
-      "riskDefault": "LOW"
+      "riskDefault": "LOW",
+      "status": "PUBLISHED"
     },
     {
       "id": "POSTGRES_CREATE_ACCOUNT",
       "name": "PostgreSQL Account Provisioning (HA Patroni)",
       "domain": "CNTT",
       "capability": "DATABASE_ADMIN",
-      "riskDefault": "MEDIUM",
       "description": "Tạo tài khoản người dùng PostgreSQL an toàn trên cụm Patroni HA: tự động phát hiện psql, xác nhận Leader/Primary node, kiểm tra chống trùng lặp và truyền mật khẩu an toàn qua stdin",
-      "implementation": {
-        "provider": "ansible",
-        "role": "create_account",
-        "become_user": "postgres",
-        "estimatedDurationSec": 20
-      },
       "inputs": [
         {
           "name": "db_user",
@@ -507,6 +506,12 @@
           "description": "Tài khoản cơ sở dữ liệu đã được tạo thành công trên node Primary"
         }
       ],
+      "implementation": {
+        "provider": "ansible",
+        "role": "create_account",
+        "become_user": "postgres",
+        "estimatedDurationSec": 20
+      },
       "verification": {
         "type": "embedded",
         "note": "Ansible assert and psql SELECT count query"
@@ -514,7 +519,9 @@
       "compensation": {
         "type": "escalate",
         "action": "NOTIFY_ONCALL"
-      }
+      },
+      "riskDefault": "MEDIUM",
+      "status": "PUBLISHED"
     }
   ],
   "blueprints": [
