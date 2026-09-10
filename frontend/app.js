@@ -125,9 +125,25 @@ async function loadInitialData() {
         if (executionsRes.ok) {
             state.executions = await executionsRes.json();
         }
+        setBackendConnectionStatus(true);
     } catch (error) {
         console.error('Failed to load initial data:', error);
-        // Continue with empty state if backend not available
+        setBackendConnectionStatus(false);
+    }
+}
+
+function setBackendConnectionStatus(isOnline) {
+    let banner = document.getElementById('backendOfflineBanner');
+    if (!isOnline) {
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'backendOfflineBanner';
+            banner.style.cssText = 'background: #dc2626; color: white; padding: 0.6rem 1rem; text-align: center; font-size: 0.85rem; font-weight: 600; position: sticky; top: 0; z-index: 9999; display: flex; justify-content: center; align-items: center; gap: 0.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.3);';
+            banner.innerHTML = '⚠️ Không thể kết nối tới Backend (http://localhost:8000). Vui lòng kiểm tra lệnh <code>npm run dev</code> trong thư mục <code>backend</code> và bấm F5 để tải lại.';
+            document.body.prepend(banner);
+        }
+    } else {
+        if (banner) banner.remove();
     }
 }
 
@@ -2595,6 +2611,9 @@ function renderImportRoleModal() {
                            value="${wizard.roleName || ''}" 
                            placeholder="ví dụ: create_account, patroni_setup"
                            oninput="updateImportField('roleName', this.value)">
+                    <div class="field-hint-text">
+                        ℹ️ Chỉ dùng chữ thường (a-z), chữ số (0-9) và dấu gạch dưới (_). Tránh dùng dấu '-' theo chuẩn Ansible Galaxy.
+                    </div>
                 </div>
                 <div>
                     <label class="form-label">Tên hiển thị Action (Display Name) *</label>
@@ -2602,6 +2621,9 @@ function renderImportRoleModal() {
                            value="${wizard.displayName || ''}" 
                            placeholder="ví dụ: PostgreSQL Account Provisioning"
                            oninput="updateImportField('displayName', this.value)">
+                    <div class="field-hint-text">
+                        ℹ️ Tên gợi nhớ hiển thị trên Action Catalog & Pipeline Designer.
+                    </div>
                 </div>
             </div>
 
@@ -2643,9 +2665,16 @@ function renderImportRoleModal() {
 
             <!-- Upload Dropzone -->
             <div style="margin-bottom: 1.25rem;">
-                <label class="form-label">
-                    ${wizard.type === 'role' ? 'File Zip Role Ansible (.zip) *' : 'File Playbook YAML hoặc Nội dung Playbook *'}
-                </label>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                    <label class="form-label" style="margin-bottom: 0;">
+                        ${wizard.type === 'role' ? 'File Zip Role Ansible (.zip) *' : 'File Playbook YAML hoặc Nội dung Playbook *'}
+                    </label>
+                    ${wizard.type === 'role' ? `
+                        <button type="button" class="btn-template-download" onclick="downloadRoleTemplate('${wizard.roleName || 'sample_custom_role'}')">
+                            <span>📥 Tải Role Mẫu Chuẩn (.zip)</span>
+                        </button>
+                    ` : ''}
+                </div>
                 
                 <div class="upload-dropzone" onclick="document.getElementById('importFileInput').click()">
                     <input type="file" id="importFileInput" style="display: none;" 
@@ -2657,10 +2686,20 @@ function renderImportRoleModal() {
                     </div>
                     <div style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.35rem;">
                         ${wizard.type === 'role' 
-                            ? 'Cấu trúc zip hợp lệ (tasks/main.yml, defaults/main.yml, vars/main.yml). Gate 1 sẽ kiểm tra Zip-Slip và chuẩn hóa LF.' 
+                            ? 'Bắt buộc định dạng .zip nguyên khối. Hệ thống kiểm tra Zip-Slip, chống Zip-Bomb và tự động chuẩn hóa LF.' 
                             : 'File playbook hợp lệ hoặc dán YAML trực tiếp bên dưới.'}
                     </div>
                 </div>
+
+                ${wizard.type === 'role' ? `
+                    <div class="field-hint-text">
+                        <span>ℹ️</span>
+                        <span>
+                            <strong>Cấu trúc bắt buộc theo Ansible Docs:</strong> File .zip phải chứa thư mục <code>tasks/main.yml</code> (định nghĩa tác vụ) và nên có <code>defaults/main.yml</code> (để tự sinh form biến). 
+                            <a href="https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_reuse_roles.html#role-directory-structure" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline;">Xem chuẩn Ansible Docs ↗</a>
+                        </span>
+                    </div>
+                ` : ''}
             </div>
 
             ${wizard.type === 'playbook' ? `
@@ -2709,6 +2748,17 @@ function renderImportRoleModal() {
                     File đã được kiểm tra tính hợp lệ qua lệnh thực thi độc lập <code>ansible-playbook --syntax-check</code>.
                 </div>
             </div>
+
+            ${vr.warnings && vr.warnings.length > 0 ? `
+                <div class="syntax-verdict-box" style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.4); color: #fde68a; margin-top: 0.75rem;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: #fbbf24;">
+                        <span>⚠️</span> Lưu ý cấu trúc & Bảo mật:
+                    </div>
+                    <ul style="margin: 0.35rem 0 0 1.25rem; font-size: 0.8rem; line-height: 1.45; color: #fef08a;">
+                        ${vr.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+                    </ul>
+                </div>
+            ` : ''}
 
             <!-- Gate 4 & Security Callout -->
             <div class="security-gate-callout">
@@ -2870,6 +2920,11 @@ function renderImportRoleModal() {
     `;
 
     document.getElementById('modalContainer').innerHTML = modal;
+}
+
+function downloadRoleTemplate(roleName) {
+    const safeName = (roleName || 'sample_custom_role').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'sample_custom_role';
+    window.open(`${state.backendUrl}/api/roles/template?name=${encodeURIComponent(safeName)}`, '_blank');
 }
 
 function setImportType(type) {

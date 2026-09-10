@@ -7,5 +7,6 @@ node_modules/
 backend/credentials.json
 backend/inventory.json
 backend/tmp/
+backend/temp/
 *.pem
 *.key

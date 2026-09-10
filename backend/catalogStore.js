@@ -13,7 +13,9 @@ export function getCatalog() {
 }
 
 export function saveCatalog(catalog) {
-  fs.writeFileSync(CATALOG_FILE, JSON.stringify(catalog, null, 2) + '\n', 'utf-8');
+  const tmpFile = `${CATALOG_FILE}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  fs.writeFileSync(tmpFile, JSON.stringify(catalog, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmpFile, CATALOG_FILE);
 }
 
 // === Validation helpers ===

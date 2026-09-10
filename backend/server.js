@@ -13,7 +13,8 @@ import {
   listBlueprints, getBlueprint, addBlueprint, updateBlueprint, deleteBlueprint
 } from './catalogStore.js';
 import {
-  validateRoleName, extractZipWithSecurity, runSyntaxCheck, extractParametersAndTasks, installRoleToProject
+  validateRoleName, extractZipWithSecurity, runSyntaxCheck, extractParametersAndTasks, installRoleToProject, findRoleRoot,
+  validateRoleDirectoryStructure, generateStandardRoleTemplateZip
 } from './roleManager.js';
 import net from 'net';
 import {
@@ -282,6 +283,19 @@ app.post('/api/actions/:id/publish', (req, res) => {
 // ROLES & PLAYBOOKS IMPORT WIZARD API
 // ===========================
 
+// GET /api/roles/template - Download standard Ansible Role template .zip
+app.get('/api/roles/template', (req, res) => {
+  try {
+    const rawName = (req.query.name || 'sample_custom_role').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const zipBuffer = generateStandardRoleTemplateZip(rawName);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${rawName}.zip"`);
+    res.send(zipBuffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/roles/validate - Wizard Step 1: Check syntax and scan parameters
 app.post('/api/roles/validate', async (req, res) => {
   try {
@@ -306,26 +320,63 @@ app.post('/api/roles/validate', async (req, res) => {
 
       try {
         const zipBuffer = Buffer.from(zipBase64, 'base64');
+        let zipMeta;
         try {
-          extractZipWithSecurity(zipBuffer, tmpRoleDir);
+          zipMeta = extractZipWithSecurity(zipBuffer, tmpRoleDir);
         } catch (zipErr) {
           return res.status(400).json({ error: zipErr.message });
         }
 
+        const roleDetection = findRoleRoot(tmpRoleDir, true);
         let effectiveRoleDir = tmpRoleDir;
-        if (!fs.existsSync(path.join(tmpRoleDir, 'tasks')) && fs.existsSync(path.join(tmpRoleDir, nameVal.roleName, 'tasks'))) {
-          effectiveRoleDir = path.join(tmpRoleDir, nameVal.roleName);
+        let isPlaybookZip = false;
+        let detectedPlaybookContent = null;
+        let structureVal = null;
+
+        if (roleDetection.type === 'role' || roleDetection.type === 'role_missing_tasks') {
+          effectiveRoleDir = roleDetection.dir;
+
+          // Gate 1b: Strict Ansible Doc Role Directory Structure Validation
+          structureVal = validateRoleDirectoryStructure(effectiveRoleDir);
+          if (!structureVal.valid) {
+            return res.status(400).json({ error: structureVal.error });
+          }
+        } else if (roleDetection.type === 'playbook') {
+          isPlaybookZip = true;
+          detectedPlaybookContent = fs.readFileSync(roleDetection.file, 'utf-8');
+        } else {
+          return res.status(400).json({
+            error: `Cấu trúc zip không hợp lệ: Không tìm thấy thư mục 'tasks/' (cho Ansible Role) hoặc file '.yml' (cho Playbook) trong file zip.`
+          });
         }
 
-        // Gate 2: Run syntax check
-        const syntaxResult = await runSyntaxCheck({
-          roleName: nameVal.roleName,
-          roleDir: effectiveRoleDir,
-          isRole: true
-        });
+        let syntaxResult;
+        let detectedTasks = [];
+        let inputs = [];
 
-        // Gate 3: Extract parameters and tasks
-        const { detectedTasks, inputs } = extractParametersAndTasks(effectiveRoleDir, true);
+        if (isPlaybookZip) {
+          syntaxResult = await runSyntaxCheck({
+            roleName: nameVal.roleName,
+            roleDir: path.join(__dirname, 'temp'),
+            isRole: false,
+            playbookContent: detectedPlaybookContent
+          });
+          const extracted = extractParametersAndTasks(null, false, detectedPlaybookContent);
+          detectedTasks = extracted.detectedTasks;
+          inputs = extracted.inputs;
+        } else {
+          // Gate 2: Run syntax check
+          syntaxResult = await runSyntaxCheck({
+            roleName: nameVal.roleName,
+            roleDir: effectiveRoleDir,
+            isRole: true
+          });
+
+          // Gate 3: Extract parameters and tasks
+          const extracted = extractParametersAndTasks(effectiveRoleDir, true);
+          detectedTasks = extracted.detectedTasks;
+          inputs = extracted.inputs;
+        }
 
         res.json({
           pass: syntaxResult.pass,
@@ -335,7 +386,12 @@ app.post('/api/roles/validate', async (req, res) => {
           stderr: syntaxResult.stderr,
           roleName: nameVal.roleName,
           tasks: detectedTasks,
-          inputs
+          inputs,
+          detectedType: isPlaybookZip ? 'playbook' : 'role',
+          warnings: [
+            ...(zipMeta?.sensitiveWarnings?.length ? [`Phát hiện file có thể chứa thông tin nhạy cảm: ${zipMeta.sensitiveWarnings.join(', ')}`] : []),
+            ...(structureVal?.warnings || [])
+          ]
         });
       } finally {
         try {
@@ -421,31 +477,68 @@ app.post('/api/roles/import', async (req, res) => {
           return res.status(400).json({ error: zipErr.message });
         }
 
+        const roleDetection = findRoleRoot(tmpRoleDir, true);
         let effectiveRoleDir = tmpRoleDir;
-        if (!fs.existsSync(path.join(tmpRoleDir, 'tasks')) && fs.existsSync(path.join(tmpRoleDir, nameVal.roleName, 'tasks'))) {
-          effectiveRoleDir = path.join(tmpRoleDir, nameVal.roleName);
-        }
+        let isPlaybookZip = false;
+        let detectedPlaybookContent = null;
 
-        // Run syntax check before permanent installation
-        const syntaxResult = await runSyntaxCheck({
-          roleName: nameVal.roleName,
-          roleDir: effectiveRoleDir,
-          isRole: true
-        });
+        if (roleDetection.type === 'role' || roleDetection.type === 'role_missing_tasks') {
+          effectiveRoleDir = roleDetection.dir;
 
-        if (!syntaxResult.pass) {
+          // Gate 1b: Strict Ansible Doc Role Directory Structure Validation
+          const structureVal = validateRoleDirectoryStructure(effectiveRoleDir);
+          if (!structureVal.valid) {
+            return res.status(400).json({ error: structureVal.error });
+          }
+        } else if (roleDetection.type === 'playbook') {
+          isPlaybookZip = true;
+          detectedPlaybookContent = fs.readFileSync(roleDetection.file, 'utf-8');
+        } else {
           return res.status(400).json({
-            error: `Syntax check failed: ${syntaxResult.stderr || syntaxResult.output}`
+            error: `Cấu trúc zip không hợp lệ: Không tìm thấy thư mục 'tasks/' (cho Ansible Role) hoặc file '.yml' (cho Playbook) trong file zip.`
           });
         }
 
-        // Install role permanently into project roles folder
-        installRoleToProject(nameVal.roleName, effectiveRoleDir);
+        if (isPlaybookZip) {
+          const syntaxResult = await runSyntaxCheck({
+            roleName: nameVal.roleName,
+            roleDir: path.join(__dirname, 'temp'),
+            isRole: false,
+            playbookContent: detectedPlaybookContent
+          });
 
-        // Auto extract inputs if not passed
-        if (!inputs || inputs.length === 0) {
-          const extracted = extractParametersAndTasks(effectiveRoleDir, true);
-          inputs = extracted.inputs || [];
+          if (!syntaxResult.pass) {
+            return res.status(400).json({
+              error: `Syntax check failed: ${syntaxResult.stderr || syntaxResult.output}`
+            });
+          }
+
+          if (!inputs || inputs.length === 0) {
+            const extracted = extractParametersAndTasks(null, false, detectedPlaybookContent);
+            inputs = extracted.inputs || [];
+          }
+        } else {
+          // Run syntax check before permanent installation
+          const syntaxResult = await runSyntaxCheck({
+            roleName: nameVal.roleName,
+            roleDir: effectiveRoleDir,
+            isRole: true
+          });
+
+          if (!syntaxResult.pass) {
+            return res.status(400).json({
+              error: `Syntax check failed: ${syntaxResult.stderr || syntaxResult.output}`
+            });
+          }
+
+          // Install role permanently into project roles folder
+          installRoleToProject(nameVal.roleName, effectiveRoleDir);
+
+          // Auto extract inputs if not passed
+          if (!inputs || inputs.length === 0) {
+            const extracted = extractParametersAndTasks(effectiveRoleDir, true);
+            inputs = extracted.inputs || [];
+          }
         }
 
         // Register Action in catalogStore
