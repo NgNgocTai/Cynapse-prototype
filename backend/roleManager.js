@@ -4,6 +4,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import AdmZip from 'adm-zip';
+import zlib from 'zlib';
 import * as yaml from 'js-yaml';
 import { detectAnsibleEnvironment, toWslPath } from './ansibleRunner.js';
 
@@ -58,13 +59,17 @@ export const ALLOWED_ROOT_FILES = new Set([
 // Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
 const WINDOWS_RESERVED_DEVICE_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
-// Malicious execution patterns in task definitions (Critical - BLOCKING)
+// Malicious execution patterns in task & template definitions (Critical - BLOCKING)
 const MALICIOUS_PATTERNS = [
   { pattern: /(?:curl|wget)\s+[^\n|]*\|\s*(?:ba|z|t?c)?sh/i, description: 'Lệnh tải mã độc từ xa và pipe trực tiếp vào shell (curl/wget | bash)' },
+  { pattern: /(?:base64\s+-(?:d|-decode)|openssl\s+enc\s+-d)\s*\|\s*(?:ba|z|t?c)?sh/i, description: 'Lệnh giải mã base64 và pipe trực tiếp vào shell' },
+  { pattern: /(?:python[23]?|perl|ruby|php)\s+-c\s+['"][^'"]*(?:urllib|requests|socket|pty|subprocess|eval|exec|system)/i, description: 'Lệnh thực thi script nội dòng (inline python/perl/ruby) mở socket/subprocess' },
   { pattern: /\brm\s+(?:-[a-zA-Z]*f[a-zA-Z]*\s+)?(?:\/|\/\*)\b/, description: 'Lệnh xóa trắng hệ thống tệp gốc (rm -rf /)' },
   { pattern: /(?:\/etc\/shadow|\/etc\/gshadow)\b/i, description: 'Đọc/can thiệp file mật khẩu băm của hệ thống (/etc/shadow)' },
   { pattern: /(?:\/dev\/tcp\/|\/dev\/udp\/|\bnc\s+-[a-zA-Z0-9]*e\b|\bmkfifo\s+\/tmp\/|\bbash\s+-i\s+>&)/i, description: 'Lệnh tạo Reverse Shell kết nối trái phép ra bên ngoài' },
-  { pattern: /-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH)?\s*PRIVATE\s+KEY-----/i, description: 'Chứa Private Key nhúng trực tiếp trong nội dung task' }
+  { pattern: /-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH)?\s*PRIVATE\s+KEY-----/i, description: 'Chứa Private Key nhúng trực tiếp trong nội dung task/template' },
+  { pattern: /lookup\s*\(\s*['"]pipe['"]/i, description: 'Hàm lookup("pipe", ...) cho phép chạy lệnh tùy ý trên máy chủ Controller' },
+  { pattern: /(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|subprocess\.Popen)/i, description: 'Khai thác Server-Side Template Injection (SSTI) / Python Introspection' }
 ];
 
 // High-risk Ansible modules requiring explicit admin audit (Warnings)
@@ -76,8 +81,7 @@ const HIGH_RISK_MODULES = new Set([
 ]);
 
 /**
- * Gate 2b: Scan Task Execution Security
- * Detects malicious patterns (blocking) and high-risk modules (audit warnings)
+ * Gate 2b: Scan Task Execution Security (Per-file YAML AST & Pattern scan)
  */
 export function scanTaskExecutionSecurity(tasksYamlContent, sourceContext = 'tasks/main.yml') {
   const blockingErrors = [];
@@ -120,6 +124,80 @@ export function scanTaskExecutionSecurity(tasksYamlContent, sourceContext = 'tas
     pass: blockingErrors.length === 0,
     blockingErrors,
     auditWarnings
+  };
+}
+
+/**
+ * Gate 2b Comprehensive: Scans tasks/, handlers/, templates/, vars/, and defaults/
+ * Ensures malicious logic cannot hide in secondary directories or templates.
+ */
+export function scanRoleSecurityComprehensive(roleDir) {
+  const blockingErrors = [];
+  const auditWarnings = [];
+
+  function scanDir(subDirName, allowedExts, handler) {
+    const targetDir = path.join(roleDir, subDirName);
+    if (!fs.existsSync(targetDir)) return;
+    try {
+      function walk(dir) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const ent of entries) {
+          if (ent.isSymbolicLink()) continue;
+          const full = path.join(dir, ent.name);
+          if (ent.isDirectory()) {
+            walk(full);
+          } else if (ent.isFile()) {
+            const ext = path.extname(ent.name).toLowerCase();
+            if (allowedExts.some(e => ent.name.toLowerCase().endsWith(e))) {
+              const rel = path.relative(roleDir, full).replace(/\\/g, '/');
+              const content = fs.readFileSync(full, 'utf-8');
+              handler(content, rel);
+            }
+          }
+        }
+      }
+      walk(targetDir);
+    } catch (e) {}
+  }
+
+  // 1. Scan tasks/
+  scanDir('tasks', ['.yml', '.yaml'], (content, rel) => {
+    const res = scanTaskExecutionSecurity(content, rel);
+    if (!res.pass) blockingErrors.push(...res.blockingErrors);
+    auditWarnings.push(...res.auditWarnings);
+  });
+
+  // 2. Scan handlers/
+  scanDir('handlers', ['.yml', '.yaml'], (content, rel) => {
+    const res = scanTaskExecutionSecurity(content, rel);
+    if (!res.pass) blockingErrors.push(...res.blockingErrors);
+    auditWarnings.push(...res.auditWarnings);
+  });
+
+  // 3. Scan templates/ (.j2, .jinja2)
+  scanDir('templates', ['.j2', '.jinja2'], (content, rel) => {
+    for (const item of MALICIOUS_PATTERNS) {
+      if (item.pattern.test(content)) {
+        blockingErrors.push(`[CẢNH BÁO AN NINH CỰC NGUY HIỂM] ${item.description} trong template '${rel}'.`);
+      }
+    }
+  });
+
+  // 4. Scan vars/ and defaults/
+  const scanVarsOrDefaults = (content, rel) => {
+    for (const item of MALICIOUS_PATTERNS) {
+      if (item.pattern.test(content)) {
+        blockingErrors.push(`[CẢNH BÁO AN NINH CỰC NGUY HIỂM] ${item.description} trong biến '${rel}'.`);
+      }
+    }
+  };
+  scanDir('vars', ['.yml', '.yaml'], scanVarsOrDefaults);
+  scanDir('defaults', ['.yml', '.yaml'], scanVarsOrDefaults);
+
+  return {
+    pass: blockingErrors.length === 0,
+    blockingErrors: [...new Set(blockingErrors)],
+    auditWarnings: [...new Set(auditWarnings)]
   };
 }
 
@@ -206,8 +284,39 @@ export function extractZipWithSecurity(zipBuffer, destDir) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
 
-      // Decompress and measure actual in-memory bytes (defeats forged zip header lies)
-      let content = entry.getData();
+      // Native Memory-Guarded Decompression:
+      // entry.getData() would allocate the entire uncompressed buffer in RAM at once,
+      // which can trigger an OOM crash if a 10KB zip deflates to several GBs.
+      // Instead, we decompress with native zlib.inflateRawSync using maxOutputLength.
+      let content;
+      const remainingAllowedBytes = MAX_UNCOMPRESSED_SIZE - actualTotalDecompressedBytes;
+      if (remainingAllowedBytes <= 0) {
+        throw new Error(`CẢNH BÁO BẢO MẬT: Tổng dung lượng giải nén thực tế vượt quá giới hạn an toàn 50MB (Zip Bomb Protection)!`);
+      }
+
+      try {
+        const compressed = entry.getCompressedData();
+        if (entry.header && entry.header.method === 0) {
+          // Stored (no compression): directly verify length before allocation
+          if (compressed.length > remainingAllowedBytes) {
+            throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' (${(compressed.length / (1024 * 1024)).toFixed(1)}MB) vượt quá dung lượng cho phép!`);
+          }
+          content = compressed;
+        } else {
+          // Deflate (method 8): native zlib enforcement with maxOutputLength ceiling
+          content = zlib.inflateRawSync(compressed, { maxOutputLength: remainingAllowedBytes });
+        }
+      } catch (decompressErr) {
+        if (decompressErr.code === 'ERR_BUFFER_TOO_LARGE' || decompressErr.message?.includes('larger than')) {
+          throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' giải nén vượt quá trần bộ nhớ cho phép (50MB). Chặn đứng Zip Bomb trước khi cấp phát RAM!`);
+        }
+        // Fallback to entry.getData() only if custom compression method, but guarded by remainingAllowedBytes
+        content = entry.getData();
+        if (content.length > remainingAllowedBytes) {
+          throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' giải nén (${(content.length / (1024 * 1024)).toFixed(1)}MB) vượt quá giới hạn an toàn 50MB!`);
+        }
+      }
+
       actualTotalDecompressedBytes += content.length;
 
       if (actualTotalDecompressedBytes > MAX_UNCOMPRESSED_SIZE) {

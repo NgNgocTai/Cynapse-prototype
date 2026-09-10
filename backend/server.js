@@ -14,7 +14,7 @@ import {
 } from './catalogStore.js';
 import {
   validateRoleName, extractZipWithSecurity, runSyntaxCheck, extractParametersAndTasks, installRoleToProject, findRoleRoot,
-  validateRoleDirectoryStructure, generateStandardRoleTemplateZip, scanTaskExecutionSecurity
+  validateRoleDirectoryStructure, generateStandardRoleTemplateZip, scanTaskExecutionSecurity, scanRoleSecurityComprehensive
 } from './roleManager.js';
 import net from 'net';
 import {
@@ -267,9 +267,30 @@ app.delete('/api/actions/:id', (req, res) => {
   res.json({ message: `Action ${req.params.id} deleted` });
 });
 
-// POST /api/actions/:id/publish - Publish action from DRAFT to PUBLISHED
-app.post('/api/actions/:id/publish', (req, res) => {
-  const actor = req.headers['x-actor'] || req.body?.actor || 'operator';
+/**
+ * Admin Authorization Guard (Gate 4 Authorization Enforcement):
+ * Verifies caller authorization for administrative operations (Publish Action, etc.)
+ * Checks x-admin-token or Authorization: Bearer <token> against ADMIN_API_KEY.
+ * If ADMIN_API_KEY is not configured (prototype/dev mode), logs audit warning and proceeds.
+ */
+function adminAuthGuard(req, res, next) {
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey) {
+    const providedKey = req.headers['x-admin-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+    if (!providedKey || providedKey !== adminKey) {
+      writeAudit('Security', req.params.id || 'system', 'anonymous', 'publish_rejected', 'forbidden',
+        'Cố gắng duyệt (Publish) Action nhưng thiếu hoặc sai Admin API Key.');
+      return res.status(403).json({
+        error: 'Truy cập bị từ chối: Yêu cầu quyền Quản trị viên (Admin) để Publish Action. Vui lòng cung cấp header x-admin-token hợp lệ.'
+      });
+    }
+  }
+  next();
+}
+
+// POST /api/actions/:id/publish - Publish action from DRAFT to PUBLISHED (Admin Guarded)
+app.post('/api/actions/:id/publish', adminAuthGuard, (req, res) => {
+  const actor = req.headers['x-actor'] || req.body?.actor || 'admin';
   const result = publishAction(req.params.id, actor);
   if (!result.ok) {
     return res.status(400).json({ error: result.error });
@@ -357,18 +378,10 @@ app.post('/api/roles/validate', async (req, res) => {
             return res.status(400).json({ error: taskSec.blockingErrors.join('\n') });
           }
         } else {
-          // Gate 2b: Scan all task files in tasks/ for dangerous execution patterns & high risk modules
-          const tasksDir = path.join(effectiveRoleDir, 'tasks');
-          if (fs.existsSync(tasksDir)) {
-            const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
-            for (const tf of taskFiles) {
-              const content = fs.readFileSync(path.join(tasksDir, tf), 'utf-8');
-              const sec = scanTaskExecutionSecurity(content, `tasks/${tf}`);
-              if (!sec.pass) {
-                return res.status(400).json({ error: sec.blockingErrors.join('\n') });
-              }
-              taskSec.auditWarnings.push(...sec.auditWarnings);
-            }
+          // Gate 2b Comprehensive: Scans tasks/, handlers/, templates/, vars/, and defaults/
+          taskSec = scanRoleSecurityComprehensive(effectiveRoleDir);
+          if (!taskSec.pass) {
+            return res.status(400).json({ error: taskSec.blockingErrors.join('\n') });
           }
         }
 
@@ -546,17 +559,10 @@ app.post('/api/roles/import', async (req, res) => {
             inputs = extracted.inputs || [];
           }
         } else {
-          // Gate 2b: Scan all task files in tasks/ for dangerous execution patterns before installing
-          const tasksDir = path.join(effectiveRoleDir, 'tasks');
-          if (fs.existsSync(tasksDir)) {
-            const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
-            for (const tf of taskFiles) {
-              const content = fs.readFileSync(path.join(tasksDir, tf), 'utf-8');
-              const sec = scanTaskExecutionSecurity(content, `tasks/${tf}`);
-              if (!sec.pass) {
-                return res.status(400).json({ error: sec.blockingErrors.join('\n') });
-              }
-            }
+          // Gate 2b Comprehensive: Scan tasks/, handlers/, templates/, vars/, defaults/ before installing
+          const sec = scanRoleSecurityComprehensive(effectiveRoleDir);
+          if (!sec.pass) {
+            return res.status(400).json({ error: sec.blockingErrors.join('\n') });
           }
 
           // Run syntax check before permanent installation
