@@ -14,7 +14,7 @@ import {
 } from './catalogStore.js';
 import {
   validateRoleName, extractZipWithSecurity, runSyntaxCheck, extractParametersAndTasks, installRoleToProject, findRoleRoot,
-  validateRoleDirectoryStructure, generateStandardRoleTemplateZip
+  validateRoleDirectoryStructure, generateStandardRoleTemplateZip, scanTaskExecutionSecurity
 } from './roleManager.js';
 import net from 'net';
 import {
@@ -350,6 +350,28 @@ app.post('/api/roles/validate', async (req, res) => {
           });
         }
 
+        let taskSec = { pass: true, blockingErrors: [], auditWarnings: [] };
+        if (isPlaybookZip) {
+          taskSec = scanTaskExecutionSecurity(detectedPlaybookContent, 'playbook.yml');
+          if (!taskSec.pass) {
+            return res.status(400).json({ error: taskSec.blockingErrors.join('\n') });
+          }
+        } else {
+          // Gate 2b: Scan all task files in tasks/ for dangerous execution patterns & high risk modules
+          const tasksDir = path.join(effectiveRoleDir, 'tasks');
+          if (fs.existsSync(tasksDir)) {
+            const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+            for (const tf of taskFiles) {
+              const content = fs.readFileSync(path.join(tasksDir, tf), 'utf-8');
+              const sec = scanTaskExecutionSecurity(content, `tasks/${tf}`);
+              if (!sec.pass) {
+                return res.status(400).json({ error: sec.blockingErrors.join('\n') });
+              }
+              taskSec.auditWarnings.push(...sec.auditWarnings);
+            }
+          }
+        }
+
         let syntaxResult;
         let detectedTasks = [];
         let inputs = [];
@@ -390,7 +412,8 @@ app.post('/api/roles/validate', async (req, res) => {
           detectedType: isPlaybookZip ? 'playbook' : 'role',
           warnings: [
             ...(zipMeta?.sensitiveWarnings?.length ? [`Phát hiện file có thể chứa thông tin nhạy cảm: ${zipMeta.sensitiveWarnings.join(', ')}`] : []),
-            ...(structureVal?.warnings || [])
+            ...(structureVal?.warnings || []),
+            ...taskSec.auditWarnings
           ]
         });
       } finally {
@@ -500,6 +523,11 @@ app.post('/api/roles/import', async (req, res) => {
         }
 
         if (isPlaybookZip) {
+          const sec = scanTaskExecutionSecurity(detectedPlaybookContent, 'playbook.yml');
+          if (!sec.pass) {
+            return res.status(400).json({ error: sec.blockingErrors.join('\n') });
+          }
+
           const syntaxResult = await runSyntaxCheck({
             roleName: nameVal.roleName,
             roleDir: path.join(__dirname, 'temp'),
@@ -518,6 +546,19 @@ app.post('/api/roles/import', async (req, res) => {
             inputs = extracted.inputs || [];
           }
         } else {
+          // Gate 2b: Scan all task files in tasks/ for dangerous execution patterns before installing
+          const tasksDir = path.join(effectiveRoleDir, 'tasks');
+          if (fs.existsSync(tasksDir)) {
+            const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+            for (const tf of taskFiles) {
+              const content = fs.readFileSync(path.join(tasksDir, tf), 'utf-8');
+              const sec = scanTaskExecutionSecurity(content, `tasks/${tf}`);
+              if (!sec.pass) {
+                return res.status(400).json({ error: sec.blockingErrors.join('\n') });
+              }
+            }
+          }
+
           // Run syntax check before permanent installation
           const syntaxResult = await runSyntaxCheck({
             roleName: nameVal.roleName,

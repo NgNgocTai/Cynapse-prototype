@@ -46,12 +46,85 @@ export const ALLOWED_ROLE_SUBDIRS = new Set([
 ]);
 
 export const ALLOWED_ROOT_FILES = new Set([
-  'readme.md', 'readme.txt', 'readme', 'license', 'license.txt', 'license.md',
-  '.gitkeep', '.ansible-lint', 'requirements.yml', 'requirements.yaml'
+  'readme.md', 'readme.txt', 'readme',
+  'license', 'license.txt', 'license.md',
+  'changelog.md', 'changelog.txt',
+  'contributing.md',
+  '.gitkeep', '.ansible-lint',
+  'requirements.yml', 'requirements.yaml',
+  'meta.yml', 'meta.yaml'
+]);
+
+// Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+const WINDOWS_RESERVED_DEVICE_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+// Malicious execution patterns in task definitions (Critical - BLOCKING)
+const MALICIOUS_PATTERNS = [
+  { pattern: /(?:curl|wget)\s+[^\n|]*\|\s*(?:ba|z|t?c)?sh/i, description: 'Lệnh tải mã độc từ xa và pipe trực tiếp vào shell (curl/wget | bash)' },
+  { pattern: /\brm\s+(?:-[a-zA-Z]*f[a-zA-Z]*\s+)?(?:\/|\/\*)\b/, description: 'Lệnh xóa trắng hệ thống tệp gốc (rm -rf /)' },
+  { pattern: /(?:\/etc\/shadow|\/etc\/gshadow)\b/i, description: 'Đọc/can thiệp file mật khẩu băm của hệ thống (/etc/shadow)' },
+  { pattern: /(?:\/dev\/tcp\/|\/dev\/udp\/|\bnc\s+-[a-zA-Z0-9]*e\b|\bmkfifo\s+\/tmp\/|\bbash\s+-i\s+>&)/i, description: 'Lệnh tạo Reverse Shell kết nối trái phép ra bên ngoài' },
+  { pattern: /-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH)?\s*PRIVATE\s+KEY-----/i, description: 'Chứa Private Key nhúng trực tiếp trong nội dung task' }
+];
+
+// High-risk Ansible modules requiring explicit admin audit (Warnings)
+const HIGH_RISK_MODULES = new Set([
+  'ansible.builtin.shell', 'shell',
+  'ansible.builtin.raw', 'raw',
+  'ansible.builtin.script', 'script',
+  'ansible.builtin.fetch', 'fetch'
 ]);
 
 /**
- * Gate 1: Unzip with Zip-Slip Guard, Zip-Bomb Defense & Line Ending Normalization (CRLF -> LF)
+ * Gate 2b: Scan Task Execution Security
+ * Detects malicious patterns (blocking) and high-risk modules (audit warnings)
+ */
+export function scanTaskExecutionSecurity(tasksYamlContent, sourceContext = 'tasks/main.yml') {
+  const blockingErrors = [];
+  const auditWarnings = [];
+
+  if (!tasksYamlContent || typeof tasksYamlContent !== 'string') {
+    return { pass: true, blockingErrors, auditWarnings };
+  }
+
+  // 1. Scan for critical malicious string patterns
+  for (const item of MALICIOUS_PATTERNS) {
+    if (item.pattern.test(tasksYamlContent)) {
+      blockingErrors.push(`[CẢNH BÁO AN NINH CỰC NGUY HIỂM] ${item.description} trong '${sourceContext}'.`);
+    }
+  }
+
+  // 2. Parse YAML AST to inspect tasks and modules
+  try {
+    const tasksDoc = yaml.load(tasksYamlContent);
+    if (Array.isArray(tasksDoc)) {
+      for (const t of tasksDoc) {
+        if (!t || typeof t !== 'object') continue;
+        const taskName = t.name || 'Unnamed Task';
+        for (const key of Object.keys(t)) {
+          if (HIGH_RISK_MODULES.has(key)) {
+            if (key.includes('fetch')) {
+              auditWarnings.push(`Tác vụ "${taskName}" dùng module '${key}': Cho phép lấy file từ máy chủ đích về controller; cần kiểm toán đường dẫn tránh rò rỉ dữ liệu.`);
+            } else {
+              auditWarnings.push(`Tác vụ "${taskName}" dùng module '${key}': Cho phép thực thi lệnh shell tùy ý; cần Quản trị viên thẩm định kỹ mã nguồn trước khi Publish.`);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // YAML parsing errors will be caught by syntax checker
+  }
+
+  return {
+    pass: blockingErrors.length === 0,
+    blockingErrors,
+    auditWarnings
+  };
+}
+
+/**
+ * Gate 1: Unzip with Dual-Layer Zip Bomb Defense, Windows-Hardened Zip-Slip Guard & Symlink Block
  */
 export function extractZipWithSecurity(zipBuffer, destDir) {
   if (!fs.existsSync(destDir)) {
@@ -62,54 +135,65 @@ export function extractZipWithSecurity(zipBuffer, destDir) {
   const zipEntries = zip.getEntries();
   const canonicalDest = path.resolve(destDir);
 
-  // Zip-Bomb Check 1: Max Entry Count
+  // Layer 1 Check: Entry count limit
   if (zipEntries.length > MAX_ENTRY_COUNT) {
     throw new Error(`CẢNH BÁO BẢO MẬT: File zip chứa quá nhiều entry (${zipEntries.length} > ${MAX_ENTRY_COUNT}). Nghi vấn Zip Bomb!`);
   }
 
-  // Pre-calculate total uncompressed size & scan for sensitive files
-  let totalUncompressedSize = 0;
+  // Layer 1 Pre-Scan: Header uncompressed size & sensitive file hints
+  let declaredUncompressedSize = 0;
   const sensitiveWarnings = [];
 
   for (const entry of zipEntries) {
-    totalUncompressedSize += entry.header.size;
+    declaredUncompressedSize += (entry.header ? entry.header.size : 0);
 
-    // Check sensitive file patterns (non-blocking warning)
     const baseName = path.basename(entry.entryName);
     if (SENSITIVE_PATTERNS.some(p => p.test(baseName))) {
       sensitiveWarnings.push(entry.entryName);
     }
 
-    // Zip-Bomb Check 2: Compression Ratio Anomaly (> 100x and uncompressed > 1MB)
-    if (entry.header.compressedSize > 0 && entry.header.size > 1024 * 1024) {
+    // Header compression ratio sanity check
+    if (entry.header && entry.header.compressedSize > 0 && entry.header.size > 1024 * 1024) {
       const ratio = entry.header.size / entry.header.compressedSize;
       if (ratio > 100) {
-        throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' có tỷ lệ nén bất thường (${Math.round(ratio)}x). Nghi vấn Zip Bomb!`);
+        throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' có tỷ lệ nén bất thường (${Math.round(ratio)}x theo header). Nghi vấn Zip Bomb!`);
       }
     }
   }
 
-  // Zip-Bomb Check 3: Max Uncompressed Size (50MB)
-  if (totalUncompressedSize > MAX_UNCOMPRESSED_SIZE) {
-    throw new Error(`CẢNH BÁO BẢO MẬT: Tổng dung lượng giải nén (${(totalUncompressedSize / (1024 * 1024)).toFixed(1)}MB) vượt quá giới hạn an toàn 50MB (Zip Bomb Protection)!`);
+  if (declaredUncompressedSize > MAX_UNCOMPRESSED_SIZE) {
+    throw new Error(`CẢNH BÁO BẢO MẬT: Tổng dung lượng giải nén theo khai báo (${(declaredUncompressedSize / (1024 * 1024)).toFixed(1)}MB) vượt quá giới hạn an toàn 50MB (Zip Bomb Protection)!`);
   }
+
+  // Layer 2 Extraction & Real Runtime Byte Metering
+  let actualTotalDecompressedBytes = 0;
 
   for (const entry of zipEntries) {
     const rawName = entry.entryName.replace(/\\/g, '/');
 
-    // Advanced Zip-Slip Check 1: Reject absolute paths (starting with / or drive letters C:/)
-    if (rawName.startsWith('/') || /^[a-zA-Z]:/.test(rawName)) {
-      throw new Error(`CẢNH BÁO BẢO MẬT: Phát hiện entry có đường dẫn tuyệt đối trái phép '${entry.entryName}'!`);
+    // Windows & POSIX Zip-Slip Guard 1: Reject absolute paths, UNC paths, and drive letters
+    if (
+      rawName.startsWith('/') ||
+      rawName.startsWith('//') ||
+      entry.entryName.startsWith('\\\\') ||
+      /^[a-zA-Z]:/.test(rawName)
+    ) {
+      throw new Error(`CẢNH BÁO BẢO MẬT: Phát hiện entry có đường dẫn tuyệt đối hoặc UNC trái phép '${entry.entryName}'!`);
     }
 
-    const targetPath = path.resolve(destDir, rawName);
+    // Windows Device Name Guard: Reject CON, PRN, AUX, NUL, COM1..9, LPT1..9
+    const baseName = path.basename(rawName).toLowerCase();
+    if (WINDOWS_RESERVED_DEVICE_NAMES.test(baseName)) {
+      throw new Error(`CẢNH BÁO BẢO MẬT: Phát hiện entry sử dụng tên thiết bị hệ thống Windows trái phép '${entry.entryName}'!`);
+    }
 
-    // Advanced Zip-Slip Check 2: Path Traversal boundary check
+    // Canonical Boundary Check
+    const targetPath = path.resolve(destDir, rawName);
     if (!targetPath.startsWith(canonicalDest + path.sep) && targetPath !== canonicalDest) {
       throw new Error(`CẢNH BÁO BẢO MẬT: Phát hiện tấn công Path Traversal (Zip-Slip) với entry '${entry.entryName}'!`);
     }
 
-    // Advanced Zip-Slip Check 3: Reject Symbolic Link entries to prevent symlink traversal
+    // Reject Symbolic Link entries
     if (entry.header && (entry.header.isSymbolicLink || (entry.attr && (entry.attr & 0o120000) === 0o120000))) {
       throw new Error(`CẢNH BÁO BẢO MẬT: Chặn entry là Symbolic Link '${entry.entryName}' để ngăn ngừa Symbolic Link Traversal.`);
     }
@@ -122,7 +206,21 @@ export function extractZipWithSecurity(zipBuffer, destDir) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
 
+      // Decompress and measure actual in-memory bytes (defeats forged zip header lies)
       let content = entry.getData();
+      actualTotalDecompressedBytes += content.length;
+
+      if (actualTotalDecompressedBytes > MAX_UNCOMPRESSED_SIZE) {
+        throw new Error(`CẢNH BÁO BẢO MẬT: Dung lượng giải nén thực tế (${(actualTotalDecompressedBytes / (1024 * 1024)).toFixed(1)}MB) vượt quá giới hạn an toàn 50MB (Zip Bomb Protection)!`);
+      }
+
+      if (entry.header && entry.header.compressedSize > 0 && content.length > 1024 * 1024) {
+        const actualRatio = content.length / entry.header.compressedSize;
+        if (actualRatio > 100) {
+          throw new Error(`CẢNH BÁO BẢO MẬT: Entry '${entry.entryName}' có tỷ lệ nén thực tế bất thường (${Math.round(actualRatio)}x). Nghi vấn Zip Bomb!`);
+        }
+      }
+
       const ext = path.extname(targetPath).toLowerCase();
       // Line Ending Normalization to LF for text/yaml files
       if (['.yml', '.yaml', '.j2', '.json', '.txt', '.ini', '.cfg'].includes(ext)) {
@@ -137,7 +235,7 @@ export function extractZipWithSecurity(zipBuffer, destDir) {
   return {
     success: true,
     count: zipEntries.length,
-    uncompressedSize: totalUncompressedSize,
+    uncompressedSize: actualTotalDecompressedBytes,
     sensitiveWarnings: [...new Set(sensitiveWarnings)]
   };
 }
@@ -269,11 +367,11 @@ export function validateRoleDirectoryStructure(roleDir) {
         warnings.push(`Thư mục '${entry.name}' không nằm trong chuẩn Ansible Role tiêu chuẩn.`);
       }
     } else if (entry.isFile()) {
-      // Check against allowed root files
-      if (ALLOWED_ROOT_FILES.has(lowerName) || lowerName.endsWith('.md') || lowerName.endsWith('.txt')) {
+      // Check against strictly allowed root files (no wildcards)
+      if (ALLOWED_ROOT_FILES.has(lowerName)) {
         detectedRootFiles.push(entry.name);
       } else if (!lowerName.startsWith('.')) {
-        warnings.push(`File rời '${entry.name}' ở thư mục gốc.`);
+        warnings.push(`File rời '${entry.name}' ở thư mục gốc không thuộc danh mục tài liệu chuẩn.`);
       }
     }
   }

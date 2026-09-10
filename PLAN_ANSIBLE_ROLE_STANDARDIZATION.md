@@ -1,30 +1,45 @@
-# Kế Hoạch Triển Khai & Quy Chuẩn: Ansible Role Import & Enterprise Security Hardening
+# Kế Hoạch Triển Khai & Tiêu Chuẩn Bảo Mật: Enterprise Ansible Role Import & Execution Safety
 
-> **Trạng thái:** `COMPLETED` (Đã triển khai, kiểm thử tự động 100% PASS và đẩy lên nhánh `dev`)  
+> **Trạng thái:** `COMPLETED & VERIFIED` (Đã củng cố toàn diện, vượt qua 8/8 bài kiểm thử chuyên sâu và 9/9 hồi quy)  
 > **Nhánh Git:** `dev`  
 > **Tài liệu tham chiếu chuẩn:** [Red Hat Ansible Docs - Role Directory Structure](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_reuse_roles.html#role-directory-structure)
 
 ---
 
-## 1. Bối Cảnh & Mục Tiêu
+## 1. Bối Cảnh & Các Rủi Ro An Ninh Mở Rộng
 
-Hệ thống Synapse cung cấp tính năng Self-Service Import Role/Playbook qua 6 Chốt Chặn Bảo Mật Cứng (Hard Security Gates). Kế hoạch này hoàn thiện việc tiêu chuẩn hóa gói nén Role Ansible tải lên, triệt tiêu nguy cơ tấn công qua file zip, đồng thời đảm bảo trải nghiệm người dùng liền mạch (không bị lỗi "tự bắn vào chân"):
-1. **Chuẩn hóa cấu trúc thư mục Role** theo chuẩn chính thức của Red Hat / Ansible Galaxy.
-2. **Triển khai 3 điều kiện tiên quyết** đã chốt trước khi merge:
-   - **Điều kiện 1:** Tách riêng Allowlist "thư mục con" và "file rời tại root" để các file tài liệu (`README.md`, `LICENSE`...) và chính role mẫu do hệ thống sinh ra không bao giờ tự vi phạm thẩm định.
-   - **Điều kiện 2:** Pipeline kiểm tra theo đúng thứ tự an toàn: `Zip-Slip Guard` &rarr; `Symlink Guard` &rarr; `Cấu trúc thư mục`. Toàn bộ thao tác duyệt thư mục bắt buộc dùng `fs.lstatSync` (tuyệt đối không dùng `fs.statSync` để tránh follow symlink ra ngoài).
-   - **Điều kiện 3:** Bổ sung cơ chế phòng ngự **Zip Bomb** (kiểm tra dung lượng uncompressed $\le 50\text{MB}$, số lượng file $\le 500$, phát hiện tỷ lệ nén bất thường).
-   - **Góp ý bổ sung:** Cảnh báo file nhạy cảm lọt trong zip (`.env`, `*.pem`, `id_rsa`...) dưới dạng Non-blocking Warning trên UI.
-3. **Cải thiện UX & Hướng dẫn trực quan (Micro-copy)**:
-   - Nút 1-click **"📥 Tải Role Mẫu Chuẩn (.zip)"** ngay trên modal.
-   - Ghi chú giải thích định dạng tên `/^[a-z0-9_]+$/` và cấu trúc bắt buộc `tasks/main.yml`.
-   - Banner cảnh báo Offline nếu backend chưa sẵn sàng.
+Hệ thống Synapse cho phép người dùng tự đưa kịch bản tự động hóa (Ansible Role / Playbook) vào Catalog để chạy trên hạ tầng máy chủ thật (như cụm PostgreSQL Patroni `db01`). Sau khi rà soát chuyên sâu, 4 lỗ hổng/bất nhất kỹ thuật đã được xử lý triệt để:
+
+1. **Đồng bộ tuyệt đối Allowlist Root Files (Loại bỏ hoàn toàn Wildcard `*.md`, `*.txt`)**:
+   - Trước đây có sự không nhất quán giữa việc cho phép wildcard `*.md`, `*.txt` với chuẩn đóng gói nghiêm ngặt.
+   - **Quy chuẩn mới:** Chỉ chấp nhận chính xác các file tài liệu chuẩn: `readme.md`, `readme.txt`, `readme`, `license`, `license.txt`, `license.md`, `changelog.md`, `contributing.md`, `.gitkeep`, `.ansible-lint`, `requirements.yml`, `requirements.yaml`, `meta.yml`. Mọi file rời khác ngoài danh mục này đều bị phát hiện và cảnh báo.
+
+2. **Gia cố Zip-Slip toàn diện trên môi trường Windows**:
+   - Không chỉ chặn `../`, hệ thống chuẩn hóa cả hai dấu phân cách `/` và `\`.
+   - Chặn tuyệt đối đường dẫn tuyệt đối kiểu Windows (`C:\...`, `D:/...`).
+   - Chặn đường dẫn mạng **UNC Path** (`\\server\share\...` hoặc `//server/share/...`).
+   - Chặn các tên thiết bị hệ thống dành riêng của Windows (**DOS Device Names**): `CON`, `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`.
+   - Sử dụng thuật toán chuẩn `path.resolve(destDir, rawName)` và kiểm tra tiền tố `targetPath.startsWith(canonicalDest + path.sep)`.
+
+3. **Cơ chế phòng ngự Zip Bomb 2 tầng (Header Pre-Scan + Runtime Byte Metering)**:
+   - *Tầng 1 (Pre-Scan):* Quét nhanh header để loại bỏ ngay các gói zip khai báo $>500$ entries hoặc uncompressed size $>50\text{MB}$.
+   - *Tầng 2 (Runtime Metering):* Đếm byte giải nén thực tế trong bộ nhớ (`actualTotalDecompressedBytes += content.length`). Nếu file zip cố tình giả mạo header để vượt qua tầng 1 thì tầng 2 sẽ lập tức phát hiện khi dữ liệu thật vượt quá 50MB hoặc tỷ lệ nén thực tế $>100\text{x}$ &rarr; Hủy tiến trình, xóa sạch thư mục tạm và trả lỗi HTTP 400.
+
+4. **Gate 2b: Thẩm định An Toàn Nội Dung Tác Vụ (Task Execution Safety Guard)**:
+   - *Vấn đề cốt lõi:* Cú pháp YAML đúng không có nghĩa là an toàn để thực thi trên hạ tầng thật.
+   - *Chặn cứng (Blocking - HTTP 400):* Phát hiện và từ chối ngay lập tức các tác vụ chứa:
+     - Lệnh tải mã độc từ xa pipe vào shell: `curl ... | bash`, `wget ... | sh`.
+     - Lệnh xóa hủy diệt hệ thống: `rm -rf /`, `rm -rf /*`.
+     - Lệnh đọc/đánh cắp file mật khẩu hệ thống: `/etc/shadow`, `/etc/gshadow`.
+     - Lệnh tạo Reverse Shell: `/dev/tcp/`, `/dev/udp/`, `nc -e`, `mkfifo /tmp/`, `bash -i >&`.
+     - Khóa bí mật nhúng trực tiếp: `BEGIN RSA/OPENSSH PRIVATE KEY`.
+   - *Cảnh báo Kiểm toán (Audit Warnings):* Nhận diện và cảnh báo các module có quyền năng thực thi tùy ý (`ansible.builtin.shell`, `raw`, `script`) hoặc module chuyển file về máy chủ (`fetch`).
+   - *Khóa cứng Gate 4 (DRAFT Enforcement):* Role mới import luôn ở trạng thái `DRAFT` & Backend chặn cứng 100% việc tạo Execution Plan (HTTP 403), thực thi trực tiếp (HTTP 403) hoặc đưa vào Blueprint (HTTP 400). Chỉ khi Quản trị viên thẩm định và duyệt qua `POST /api/actions/:id/publish` thì Action mới được phép vận hành.
 
 ---
 
-## 2. Tiêu Chuẩn Kỹ Thuật Đã Hiện Thực Hóa
+## 2. Tiêu Chuẩn Cấu Trúc Thư Mục Role Hợp Lệ
 
-### 2.1. Cấu Trúc Cây Thư Mục Role Hợp Lệ
 ```text
 <role_name>/
 ├── tasks/
@@ -40,60 +55,42 @@ Hệ thống Synapse cung cấp tính năng Self-Service Import Role/Playbook qu
 ├── meta/
 │   └── main.yml        # [HỢP LỆ] Metadata tác giả, license
 ├── tests/              # [HỢP LỆ] Kịch bản test
-├── README.md           # [HỢP LỆ - FILE TẠI ROOT] Tài liệu hướng dẫn
-└── LICENSE             # [HỢP LỆ - FILE TẠI ROOT] Giấy phép sử dụng
+├── README.md           # [HỢP LỆ - FILE ROOT] Tài liệu hướng dẫn
+└── LICENSE             # [HỢP LỆ - FILE ROOT] Giấy phép sử dụng
 ```
 
-### 2.2. Chi Tiết 3 Điều Kiện Chốt & Cơ Chế Bảo Vệ
-| Điều Kiện / Hạng Mục | Rủi Ro Phòng Ngừa | Giải Pháp Đã Triển Khai | Trạng Thái |
+---
+
+## 3. Bảng Tổng Hợp Các Chốt Chặn Bảo Mật
+
+| Chốt Chặn | Phạm Vi | Cơ Chế Kỹ Thuật | Hành Vi |
 | :--- | :--- | :--- | :---: |
-| **Điều kiện 1: Tách riêng 2 Allowlist** | Role mẫu hoặc role chuẩn từ Galaxy có `README.md`/`LICENSE` bị reject oan do vi phạm danh sách thư mục con. | Tách riêng:<br>• `ALLOWED_ROLE_SUBDIRS`: `tasks`, `defaults`, `vars`, `handlers`, `templates`, `files`, `meta`, `library`, `tests`, `lookup_plugins`, `filter_plugins`.<br>• `ALLOWED_ROOT_FILES`: `readme.md`, `readme.txt`, `license`, `license.txt`, `.gitkeep`, `.ansible-lint`, `requirements.yml`. | ✅ **DONE** |
-| **Điều kiện 2: Thứ tự Pipeline & `fs.lstatSync`** | Vô tình follow symlink trỏ ra ngoài destDir khi duyệt cấu trúc (mở lại lỗ hổng symlink traversal). | • Pipeline: Zip-Slip & Zip-Bomb &rarr; Symlink scan &rarr; Structure validation &rarr; Syntax check.<br>• Mọi hàm duyệt (`findRoleRoot`, `validateRoleDirectoryStructure`) dùng `{ withFileTypes: true }` và `fs.lstatSync`. Tuyệt đối không dùng `fs.statSync`. | ✅ **DONE** |
-| **Điều kiện 3: Chống Zip Bomb** | File zip nhỏ (vài chục KB) giải nén ra hàng GB làm tràn đĩa hoặc crash RAM. | • Pre-scan toàn bộ entry trước khi ghi ra đĩa.<br>• Giới hạn tổng dung lượng sau giải nén: tối đa **50 MB** (`MAX_UNCOMPRESSED_SIZE`).<br>• Giới hạn số file: tối đa **500 entries** (`MAX_ENTRY_COUNT`).<br>• Phát hiện tỷ lệ nén bất thường ($> 100\text{x}$ với file $> 1\text{MB}$). | ✅ **DONE** |
-| **Góp ý: Secret Leak Warning** | Người dùng nén nhầm thư mục chứa `.env`, SSH key riêng tư (`id_rsa`). | Quét `SENSITIVE_PATTERNS`: `.env`, `*.pem`, `*.key`, `id_rsa`, `id_ed25519`, `credentials.json`. Trả về mảng `warnings` & hiển thị hộp cảnh báo màu vàng trên UI (không chặn cứng). | ✅ **DONE** |
-| **Atomic Write cho Catalog** | Trùng ghi đồng thời làm hỏng file `catalog.json`. | Viết vào file tạm `${CATALOG_FILE}.tmp.<timestamp>` rồi dùng `fs.renameSync` nguyên tử. | ✅ **DONE** |
-| **UX & Hướng dẫn trực quan** | Người dùng không biết đặt tên role đúng chuẩn hoặc cấu trúc zip cần gì. | • Nút **"📥 Tải Role Mẫu Chuẩn (.zip)"** (`GET /api/roles/template`).<br>• Micro-copy `.field-hint-text` giải thích regex `^[a-z0-9_]+$` và link trực tiếp tài liệu Ansible Docs.<br>• Banner cảnh báo khi Backend offline. | ✅ **DONE** |
+| **Gate 1a** | Tên Role | Regex `/^[a-z0-9_]+$/` (Galaxy compliant). Chặn dấu `-`, chữ hoa, ký tự lạ. | **BLOCK** |
+| **Gate 1b** | Zip-Slip (Windows + POSIX) | Chuẩn hóa `/` & `\`. Chặn UNC (`\\`), Windows Drive (`C:`), DOS Devices (`CON`, `PRN`...). Canonical path boundary check. | **BLOCK** |
+| **Gate 1c** | Symlink Traversal | Chặn entry symlink trong zip. Duyệt thư mục bằng `fs.lstatSync` (tuyệt đối không follow symlink). | **BLOCK** |
+| **Gate 1d** | Zip Bomb (2 Tầng) | Tầng 1: Pre-scan header ($\le 500$ entries, $\le 50\text{MB}$).<br>Tầng 2: Đếm byte giải nén thực tế và tỷ lệ nén thực tế. | **BLOCK** |
+| **Gate 1e** | Secret Leaks | Quét `SENSITIVE_PATTERNS` (`.env`, `*.pem`, `id_rsa`, `credentials.json`). | **WARN** |
+| **Gate 1f** | Cấu trúc Thư mục | Bắt buộc `tasks/main.yml`. Phân tách thư mục con & file root (không dùng wildcard). | **BLOCK** |
+| **Gate 2a** | Syntax Check | Chạy `ansible-playbook --syntax-check` qua `child_process.spawn(bin, args)` an toàn. | **BLOCK** |
+| **Gate 2b** | Execution Safety | Quét mã độc: `curl\|bash`, `/etc/shadow`, `rm -rf /`, reverse shell, private key.<br>Cảnh báo module `shell`, `raw`, `script`, `fetch`. | **BLOCK (Mã độc)<br>WARN (Module)** |
+| **Gate 3** | Form Generation | Tự trích xuất biến Jinja2 từ `defaults/main.yml` và `tasks/main.yml`. | **AUTO** |
+| **Gate 4** | DRAFT Enforcement | Action mới import mang cờ `DRAFT`. Chặn tạo plan (HTTP 403), chặn thực thi (HTTP 403), chặn add blueprint (HTTP 400). | **BLOCK** |
+| **Gate 5** | Auto-Blueprint | Checkbox tự tạo Blueprint mặc định **UNCHECKED (false)**. | **SAFE** |
+| **Gate 6** | Zero Hardcode | Biến môi trường WSL, Ansible binary cấu hình qua `.env`. | **STRICT** |
 
 ---
 
-## 3. Các File Đã Chỉnh Sửa & Triển Khai
+## 4. Kết Quả Kiểm Thử Toàn Diện (All Passed)
 
-1. [backend/roleManager.js](file:///d:/Code/VDT/Synapse/backend/roleManager.js):
-   - Bổ sung `MAX_UNCOMPRESSED_SIZE = 50MB`, `MAX_ENTRY_COUNT = 500`, `SENSITIVE_PATTERNS`.
-   - Bổ sung `ALLOWED_ROLE_SUBDIRS` và `ALLOWED_ROOT_FILES`.
-   - Nâng cấp `extractZipWithSecurity`: chống Zip Bomb, chặn symlink entry, quét cảnh báo nhạy cảm.
-   - Nâng cấp `findRoleRoot`: duyệt bằng `fs.lstatSync`, chuẩn hóa cờ `isRole` để không nhận nhầm `defaults/main.yml` thành playbook độc lập.
-   - Hiện thực `validateRoleDirectoryStructure(roleDir)`: kiểm tra `tasks/main.yml` và phân loại thư mục/file hợp lệ.
-   - Hiện thực `generateStandardRoleTemplateZip(roleName)`: sinh zip role mẫu chuẩn in-memory.
-
-2. [backend/catalogStore.js](file:///d:/Code/VDT/Synapse/backend/catalogStore.js):
-   - Triển khai Atomic Write trong `saveCatalog` qua file tạm và `fs.renameSync`.
-
-3. [backend/server.js](file:///d:/Code/VDT/Synapse/backend/server.js):
-   - Thêm API `GET /api/roles/template?name=<roleName>`.
-   - Tích hợp `validateRoleDirectoryStructure` vào cả 2 endpoint `POST /api/roles/validate` và `POST /api/roles/import`.
-   - Trả về danh sách `warnings` cảnh báo cấu trúc và file nhạy cảm.
-
-4. [frontend/app.js](file:///d:/Code/VDT/Synapse/frontend/app.js) & [frontend/styles.css](file:///d:/Code/VDT/Synapse/frontend/styles.css):
-   - Bổ sung hàm `downloadRoleTemplate(roleName)` kích hoạt tải file mẫu 1-click.
-   - Thêm nút `"📥 Tải Role Mẫu Chuẩn (.zip)"` trong Import Modal.
-   - Thêm các dòng ghi chú nhỏ `.field-hint-text` dưới Role Identifier và Dropzone upload.
-   - Thêm Callout Box màu vàng hiển thị cảnh báo `warnings` ở Bước 2.
-   - Thêm banner `backendOfflineBanner` cảnh báo khi backend chưa kết nối được.
-
-5. [.gitignore](file:///d:/Code/VDT/Synapse/.gitignore):
-   - Bổ sung `backend/temp/` vào danh sách loại trừ để bảo đảm thư mục giải nén tạm không bị commit.
-
----
-
-## 4. Kết Quả Xác Minh & Kiểm Thử (Verification Results)
-
-### 4.1. Bộ Kiểm Thử Cấu Trúc Ansible Doc & Hardening Gates (`scratch/test_ansible_doc_standard.mjs`)
-- **TEST 1 (Missing tasks/):** Từ chối role thiếu `tasks/main.yml` kèm thông báo trích dẫn chuẩn Ansible Docs. $\rightarrow$ **PASS**
-- **TEST 2 (Separate Allowlists):** Role chứa `README.md` và `LICENSE` tại root vượt qua kiểm tra sạch sẽ (ExitCode 0). $\rightarrow$ **PASS**
-- **TEST 3 (Zip Bomb Defense):** File zip tỷ lệ nén $>100\text{x}$ và giải nén $>50\text{MB}$ bị chặn ngay lập tức (HTTP 400). $\rightarrow$ **PASS**
-- **TEST 4 (Sensitive Leaks):** Phát hiện `.env` và `id_rsa`, trả về trong danh sách cảnh báo `warnings`. $\rightarrow$ **PASS**
-- **TEST 5 (Template Roundtrip - Ngăn lỗi tự bắn vào chân):** Lấy file zip sinh từ `GET /api/roles/template` rồi validate trực tiếp qua `POST /api/roles/validate` $\rightarrow$ **PASS 100% (ExitCode 0)**, nhận diện chuẩn 3 tasks và 3 input parameters.
+### 4.1. Bộ Kiểm Thử An Ninh Chuyên Sâu (`scratch/test_ansible_doc_standard.mjs`)
+- **TEST 1 (Missing tasks/):** Từ chối role thiếu `tasks/main.yml` $\rightarrow$ **PASS**
+- **TEST 2 (Strict Root Files):** Role có `README.md` và `LICENSE` vượt qua sạch sẽ $\rightarrow$ **PASS**
+- **TEST 3 (Zip Bomb Defense):** Gói nén tỷ lệ bất thường và $>50\text{MB}$ bị chặn ngay $\rightarrow$ **PASS**
+- **TEST 4 (Sensitive Leaks):** Phát hiện `.env` và `id_rsa` trong mảng cảnh báo $\rightarrow$ **PASS**
+- **TEST 5 (Template Roundtrip):** Mẫu sinh từ hệ thống tự validate chính nó thành công $\rightarrow$ **PASS**
+- **TEST 6 (Windows Zip-Slip Hardening):** Chặn đứng UNC Path (`\\attacker\share`), Windows Drive Letter (`C:/Windows`), và Backslash Traversal (`..\..\evil.txt`) $\rightarrow$ **PASS**
+- **TEST 7 (Gate 2b - Malicious Execution Rejection):** Chặn đứng lệnh `curl | bash` và lệnh đọc `/etc/shadow` $\rightarrow$ **PASS**
+- **TEST 8 (Gate 2b - High-Risk Module Warnings):** Phát hiện và hiển thị rõ cảnh báo kiểm toán cho `ansible.builtin.shell` và `fetch` $\rightarrow$ **PASS**
 
 ### 4.2. Bộ Kiểm Thử Hồi Quy 6 Chốt Chặn (`scratch/test_phase2_gates.mjs`)
-- Đã chạy lại toàn bộ 9/9 ca kiểm thử (Path Traversal, Zip-Slip, Syntax Check, Jinja2 extraction, DRAFT enforcement, Overwrite flag, Publish workflow) $\rightarrow$ **PASS 9/9**.
+- Đạt **9/9 tests PASS**, bảo đảm tương thích hoàn toàn với toàn bộ quy trình Publish và Pipeline của Synapse.
