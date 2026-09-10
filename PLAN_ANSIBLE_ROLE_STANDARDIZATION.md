@@ -57,9 +57,11 @@ Không chỉ giới hạn trong `tasks/main.yml`, hàm `scanRoleSecurityComprehe
 └── LICENSE             # [HỢP LỆ - FILE ROOT] Giấy phép sử dụng
 ```
 
+> ⛔ **KHÔNG HỖ TRỢ qua Self-Service Import:** `library/`, `lookup_plugins/`, `filter_plugins/`, `module_utils/`, `callback_plugins/`, `connection_plugins/`, `action_plugins/`, `inventory_plugins/` — Python là ngôn ngữ Turing-complete, không thể kiểm toán tự động.
+
 ---
 
-## 3. Bảng Tổng Hợp 8 Chốt Chặn Bảo Mật
+## 3. Bảng Tổng Hợp 11 Chốt Chặn Bảo Mật
 
 | Chốt Chặn | Phạm Vi | Cơ Chế Kỹ Thuật | Hành Vi |
 | :--- | :--- | :--- | :---: |
@@ -69,28 +71,99 @@ Không chỉ giới hạn trong `tasks/main.yml`, hàm `scanRoleSecurityComprehe
 | **Gate 1d** | Zip Bomb (C++ Ceiling) | Native `zlib.inflateRawSync({ maxOutputLength })` chặn đứng OOM trước khi cấp phát RAM. | **BLOCK** |
 | **Gate 1e** | Secret Leaks | Quét `SENSITIVE_PATTERNS` (`.env`, `*.pem`, `id_rsa`, `credentials.json`). | **WARN** |
 | **Gate 1f** | Cấu trúc Thư mục | Bắt buộc `tasks/main.yml`. Phân tách thư mục con & file root (không dùng wildcard). | **BLOCK** |
+| **Gate 1g** | **Python Plugin Dirs** | **Reject cứng `library/`, `lookup_plugins/`, `filter_plugins/`, `module_utils/`, `callback_plugins/`, `connection_plugins/`, `action_plugins/`, `inventory_plugins/`.** Python là ngôn ngữ Turing-complete — không thể kiểm toán tự động một cách tin cậy. | **BLOCK** |
 | **Gate 2a** | Syntax Check | Chạy `ansible-playbook --syntax-check` qua `child_process.spawn(bin, args)` an toàn. | **BLOCK** |
 | **Gate 2b** | Execution Safety (Toàn Diện) | Quét tasks, handlers, templates, vars/defaults. Chặn `curl\|bash`, `/etc/shadow`, `rm -rf /`, SSTI, reverse shell, lookup pipe. Cảnh báo module `shell`, `raw`, `script`, `fetch`. | **BLOCK (Mã độc)<br>WARN (Module)** |
 | **Gate 3** | Form Generation | Tự trích xuất biến Jinja2 từ `defaults/main.yml` và `tasks/main.yml`. | **AUTO** |
-| **Gate 4** | DRAFT Enforcement & Admin Auth | Action mới import mang cờ `DRAFT`. Chặn tạo plan (HTTP 403), chặn thực thi (HTTP 403), chặn add blueprint (HTTP 400). Publish endpoint được bảo vệ bởi `adminAuthGuard`. | **BLOCK** |
+| **Gate 4** | DRAFT Enforcement & Admin Auth | Action mới import mang cờ `DRAFT`. Chặn tạo plan (HTTP 403), chặn thực thi (HTTP 403), chặn add blueprint (HTTP 400). Publish endpoint được bảo vệ bởi `adminAuthGuard` với `crypto.timingSafeEqual`. | **BLOCK** |
 
 ---
 
-## 4. Kết Quả Kiểm Thử Toàn Diện (All Passed)
+## 4. Hardening Bổ Sung (Vòng 5)
 
-### 4.1. Bộ Kiểm Thử An Ninh Chuyên Sâu (`scratch/test_ansible_doc_standard.mjs` - 12/12 PASS)
-- **TEST 1:** Từ chối role thiếu `tasks/main.yml` $\rightarrow$ **PASS**
-- **TEST 2:** Role có `README.md` và `LICENSE` vượt qua sạch sẽ $\rightarrow$ **PASS**
-- **TEST 3:** Zip Bomb tỷ lệ bất thường $>50\text{MB}$ bị chặn ngay $\rightarrow$ **PASS**
-- **TEST 4:** Phát hiện `.env` và `id_rsa` trong mảng cảnh báo $\rightarrow$ **PASS**
-- **TEST 5:** Mẫu sinh từ hệ thống tự validate chính nó thành công $\rightarrow$ **PASS**
-- **TEST 6:** Chặn đứng UNC Path (`\\attacker\share`), Windows Drive (`C:/Windows`), Backslash Traversal (`..\..\evil.txt`) $\rightarrow$ **PASS**
-- **TEST 7:** Chặn đứng lệnh `curl | bash` và đọc trộm `/etc/shadow` trong tasks $\rightarrow$ **PASS**
-- **TEST 8:** Hiển thị cảnh báo kiểm toán cho `ansible.builtin.shell` và `fetch` $\rightarrow$ **PASS**
-- **TEST 9:** Phát hiện và chặn đứng khai thác SSTI trong `templates/innocent.j2` $\rightarrow$ **PASS**
-- **TEST 10:** Phát hiện và chặn đứng lệnh shell độc hại giấu trong `handlers/main.yml` $\rightarrow$ **PASS**
-- **TEST 11:** Phát hiện và chặn đứng thực thi mã qua `lookup('pipe', ...)` trong `vars/main.yml` $\rightarrow$ **PASS**
-- **TEST 12:** Kiểm tra `adminAuthGuard` trên endpoint Publish Action $\rightarrow$ **PASS**
+### 4.1. Chặn Cứng Python Plugin Directories (Gate 1g)
 
-### 4.2. Bộ Kiểm Thử Hồi Quy 6 Chốt Chặn (`scratch/test_phase2_gates.mjs` - 9/9 PASS)
-- Bảo đảm 100% tương thích với toàn bộ quy trình Publish, Blueprint và Execution Pipeline của Synapse.
+**Lý do thiết kế:** Khác với YAML task (đọc dễ, ý đồ độc hại lộ rõ qua pattern matching), Python là ngôn ngữ Turing-complete — `eval(base64.b64decode(...))`, `pickle.loads()` từ nguồn không tin cậy, hay logic độc hại split/obfuscate đều nằm ngoài khả năng quét tĩnh. Yêu cầu "admin audit thủ công" cho Python module đặt gánh nặng security review vượt quá năng lực thực tế của admin vận hành.
+
+**Quyết định:** Loại bỏ hoàn toàn bề mặt tấn công thay vì cố giảm nhẹ:
+- `ALLOWED_ROLE_SUBDIRS` chỉ còn: `tasks`, `defaults`, `vars`, `handlers`, `templates`, `files`, `meta`, `tests`
+- `REJECTED_PLUGIN_DIRS`: `library`, `lookup_plugins`, `filter_plugins`, `module_utils`, `callback_plugins`, `connection_plugins`, `action_plugins`, `inventory_plugins`
+- Message: *"Liên hệ Quản trị viên để thêm thủ công ngoài luồng Self-Service"*
+
+### 4.2. Fail-Closed Admin AuthZ & Timing-Safe Comparison (`crypto.timingSafeEqual`)
+
+- **Nguyên tắc Fail-Closed:**
+  - Nếu `ADMIN_API_KEY` chưa được cấu hình trong biến môi trường server (`.env`), `adminAuthGuard` ngay lập tức từ chối với **HTTP 500** và ghi nhật ký Audit cảnh báo lỗi cấu hình. Tuyệt đối **không bao giờ fail-open** (không cho phép bỏ qua xác thực).
+  - Nếu request thiếu header `x-admin-token` hoặc sai key, từ chối với **HTTP 403 Forbidden**.
+  - Frontend tự động kiểm tra token trong `localStorage`, hiển thị prompt yêu cầu nhập Admin API Key khi Publish, và xóa cache nếu key không hợp lệ.
+- **Timing-Safe Comparison:**
+  - Thay thế so sánh chuỗi `providedKey !== adminKey` bằng `safeCompare()` sử dụng `crypto.timingSafeEqual`.
+  - **Pitfall đã xử lý:** `timingSafeEqual` ném exception nếu 2 buffer khác độ dài → kiểm tra `bufA.length !== bufB.length` trước (độ dài không phải thông tin bí mật, chỉ nội dung mới cần constant-time).
+
+### 4.3. Upload Rate-Limiting & DRAFT Governance
+
+> **⚠️ QUAN TRỌNG:** Rate-limit là biện pháp giảm nhẹ tạm thời cho môi trường single-user/local. Nếu Synapse mở rộng ra network/multi-user thật, 2 endpoint `/api/roles/import` và `/api/roles/validate` **BẮT BUỘC** cần AuthN tối thiểu (API key/session check đơn giản) trước khi coi là an toàn. Rate-limit **KHÔNG** thay thế AuthZ.
+
+| Cơ chế | Giá trị | Mục đích |
+| :--- | :--- | :--- |
+| Upload rate-limit (sliding window) | **30 req/min per IP** (mặc định, tùy biến qua `MAX_UPLOAD_PER_MIN`, hỗ trợ test & admin bypass) | Chặn spam/DoS tự động |
+| DRAFT cap (hệ thống) | **20 DRAFT tối đa** (`MAX_PENDING_DRAFTS`) | Chặn disk-fill qua upload "chậm rãi, đều đặn, dưới ngưỡng limit" |
+| **DRAFT cap (theo IP)** | **5 DRAFT tối đa / IP** (`MAX_PENDING_DRAFTS_PER_IP`) | **Chống DoS chiếm dụng:** Ngăn chặn một cá nhân/IP đơn lẻ spam lấp đầy toàn bộ 20 slot của hệ thống |
+| DRAFT TTL auto-cleanup | **30 ngày** (`DRAFT_TTL_DAYS`) | Dọn rác tích lũy từ role không ai duyệt |
+| Cleanup schedule | **Mỗi 6 giờ + lazy mỗi lần import** | Đảm bảo cleanup chạy cả khi không có traffic |
+
+---
+
+## 5. Kết Quả Kiểm Thử Toàn Diện (All Passed)
+
+### 5.1. Bộ Kiểm Thử An Ninh Chuyên Sâu (12/12 PASS)
+- **TEST 1:** Từ chối role thiếu `tasks/main.yml` → **PASS**
+- **TEST 2:** Role có `README.md` và `LICENSE` vượt qua sạch sẽ → **PASS**
+- **TEST 3:** Zip Bomb tỷ lệ bất thường >50MB bị chặn ngay → **PASS**
+- **TEST 4:** Phát hiện `.env` và `id_rsa` trong mảng cảnh báo → **PASS**
+- **TEST 5:** Mẫu sinh từ hệ thống tự validate chính nó thành công → **PASS**
+- **TEST 6:** Chặn đứng UNC Path, Windows Drive, Backslash Traversal → **PASS**
+- **TEST 7:** Chặn đứng lệnh `curl | bash` và đọc trộm `/etc/shadow` → **PASS**
+- **TEST 8:** Hiển thị cảnh báo kiểm toán cho `shell` và `fetch` → **PASS**
+- **TEST 9:** Phát hiện và chặn đứng khai thác SSTI trong templates → **PASS**
+- **TEST 10:** Phát hiện và chặn đứng lệnh shell độc hại giấu trong handlers → **PASS**
+- **TEST 11:** Phát hiện và chặn đứng `lookup('pipe', ...)` trong vars → **PASS**
+- **TEST 12:** Kiểm tra `adminAuthGuard` Fail-Closed (chặn 403 khi thiếu token/sai token) → **PASS**
+
+### 5.2. Bộ Kiểm Thử Hồi Quy (9/9 PASS)
+- Bảo đảm 100% tương thích với toàn bộ quy trình Publish, Blueprint và Execution Pipeline.
+
+### 5.3. Bộ Kiểm Thử Hardening V5 (39/39 PASS)
+**Item 1 — Python Plugin Dir Rejection (13 tests):**
+- `REJECTED_PLUGIN_DIRS` chứa đủ `library`, `lookup_plugins`, `filter_plugins`, `module_utils` → **PASS**
+- `ALLOWED_ROLE_SUBDIRS` đã loại bỏ 3 dirs trên → **PASS**
+- Role chứa `library/`, `lookup_plugins/`, `filter_plugins/`, `callback_plugins/` đều bị reject cứng → **PASS**
+- Clean role không chứa Python dirs vẫn pass → **PASS**
+- Template tự sinh vẫn self-validate thành công → **PASS**
+
+**Item 3 — Timing-Safe Compare & Fail-Closed AuthZ (11 tests):**
+- `crypto` module imported, `safeCompare` tồn tại với length check → **PASS**
+- `adminAuthGuard` dùng `safeCompare` thay vì `!==` → **PASS**
+- `adminAuthGuard` chuẩn Fail-Closed: HTTP 500 khi thiếu key, HTTP 403 khi sai key, không có bypass fallthrough → **PASS**
+- `safeCompare`: equal/different/different-length strings, null/undefined edge cases → **PASS**
+
+**Item 2 — Rate-limit & DRAFT Governance (15 tests):**
+- `uploadRateLimit` middleware tồn tại và được áp dụng cho validate + import → **PASS**
+- Sliding window 60s, HTTP 429 on exceed → **PASS**
+- `MAX_PENDING_DRAFTS` (20) & `MAX_PENDING_DRAFTS_PER_IP` (5) → **PASS**
+- Chặn đứng DoS chiếm dụng tài nguyên với per-IP draft cap → **PASS**
+- Lưu vết `creatorIp` trên Action metadata → **PASS**
+- `cleanupStaleDrafts` function, lazy + periodic cleanup → **PASS**
+- Documentation: rate-limit KHÔNG thay thế AuthZ → **PASS**
+- Startup log hiển thị DRAFT TTL + rate-limit config + Fail-Closed enforcement → **PASS**
+
+---
+
+## 6. Backlog: Post-Publish Execution Hardening (Định Hướng Mở Rộng)
+
+> **Mục tiêu:** Quản trị rủi ro ở tầng thực thi sau khi Role đã được duyệt Publish. Ghi nhận backlog kỹ thuật để triển khai ở các phiên bản sau mà không làm chậm tiến độ scope hiện tại.
+
+- **Nguy cơ nhận diện:** Task Ansible sử dụng `include_tasks`, `import_tasks`, hoặc `include_role` kết hợp với biến động Jinja trỏ ra ngoài phạm vi thư mục role (ví dụ: `include_tasks: "{{ dynamic_path }}/task.yml"`). Về mặt kỹ thuật, tại thời điểm chạy Ansible runtime trên Controller, hành vi này có thể vượt biên đọc hoặc thực thi các file YAML khác trên máy chủ điều khiển (khác với Zip-Slip vốn chỉ chặn lúc giải nén).
+- **Giải pháp dự kiến:**
+  1. Thêm bộ linter tĩnh ở Gate 2b kiểm tra đối số của các module include/import: Cảnh báo hoặc chặn các đường dẫn chứa ký tự `..` hoặc biến trỏ ra ngoài phạm vi `{{ role_path }}`.
+  2. Cách ly Controller môi trường chạy Ansible bằng Linux Namespace / Containerized Execution Environment (chạy Ansible bên trong ephemeral Docker container hoặc Ansible Execution Environment - AEE với mount chỉ đọc vào thư mục role).

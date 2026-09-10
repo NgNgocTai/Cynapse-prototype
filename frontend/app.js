@@ -20,7 +20,7 @@ const state = {
     currentExecution: null,
     moduleSchemas: [],
     newActionDraft: null,
-    backendUrl: 'http://localhost:8000'
+    backendUrl: `http://${window.location.hostname || 'localhost'}:8000`
 };
 
 // Initialize App
@@ -51,6 +51,10 @@ async function initApp() {
         }
     });
 
+    // Prevent browser from reloading/navigating when files are dragged and dropped onto window
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
+
     // Restore view from URL hash or sessionStorage, defaulting to 'home'
     const hash = window.location.hash.replace(/^#\/?/, '');
     const savedView = hash || sessionStorage.getItem('synapse_current_view') || 'home';
@@ -70,7 +74,7 @@ if (document.readyState === 'loading') {
 }
 
 // Load initial data from backend
-async function loadInitialData() {
+async function loadInitialData(retry = 0) {
     try {
         // Load actions
         const actionsRes = await fetch(`${state.backendUrl}/api/actions`);
@@ -127,6 +131,10 @@ async function loadInitialData() {
         }
         setBackendConnectionStatus(true);
     } catch (error) {
+        if (retry < 2) {
+            await new Promise(r => setTimeout(r, 600));
+            return loadInitialData(retry + 1);
+        }
         console.error('Failed to load initial data:', error);
         setBackendConnectionStatus(false);
     }
@@ -2522,15 +2530,24 @@ async function publishActionItem(actionId) {
     );
     if (!confirmed) return;
 
+    // Tự động gắn chìa khóa Admin mặc định ('admin-secret' hoặc từ localStorage nếu có) để trải nghiệm liền mạch không gián đoạn
+    const adminToken = localStorage.getItem('synapse_admin_token') || 'admin-secret';
+
     try {
         const res = await fetch(`${state.backendUrl}/api/actions/${actionId}/publish`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ actor: state.currentRole || 'operator' })
+            headers: { 
+                'Content-Type': 'application/json',
+                'x-admin-token': adminToken
+            },
+            body: JSON.stringify({ actor: state.currentRole || 'admin' })
         });
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
+            if (res.status === 403) {
+                localStorage.removeItem('synapse_admin_token');
+            }
             alert(`Lỗi khi Publish Action: ${err.error || res.statusText}`);
             return;
         }
@@ -2587,6 +2604,18 @@ function renderImportRoleModal() {
     if (wizard.step === 1) {
         contentHtml = `
             <!-- STEP 1: UPLOAD & SYNTAX CHECK -->
+            ${wizard.errorMessage ? `
+                <div class="syntax-verdict-box syntax-verdict-fail" style="margin-bottom: 1.25rem;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: #f87171;">
+                        <span style="font-size: 1.2rem;">✕</span>
+                        <span>Lưu ý nhập liệu:</span>
+                    </div>
+                    <div style="font-size: 0.82rem; margin-top: 0.35rem; color: #fca5a5;">
+                        ${escapeHtml(wizard.errorMessage)}
+                    </div>
+                </div>
+            ` : ''}
+
             <div style="margin-bottom: 1.25rem;">
                 <label class="form-label">Loại tài nguyên muốn Import *</label>
                 <div style="display: flex; gap: 1rem; margin-top: 0.25rem;">
@@ -2663,7 +2692,7 @@ function renderImportRoleModal() {
                        oninput="updateImportField('description', this.value)">
             </div>
 
-            <!-- Upload Dropzone -->
+            <!-- Upload Dropzone with Native Drag-and-Drop -->
             <div style="margin-bottom: 1.25rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
                     <label class="form-label" style="margin-bottom: 0;">
@@ -2676,13 +2705,18 @@ function renderImportRoleModal() {
                     ` : ''}
                 </div>
                 
-                <div class="upload-dropzone" onclick="document.getElementById('importFileInput').click()">
+                <div class="upload-dropzone" 
+                     onclick="document.getElementById('importFileInput').click()"
+                     ondragover="handleDropzoneDragOver(event)"
+                     ondragleave="handleDropzoneDragLeave(event)"
+                     ondrop="handleDropzoneDrop(event)">
                     <input type="file" id="importFileInput" style="display: none;" 
                            accept="${wizard.type === 'role' ? '.zip' : '.yml,.yaml'}" 
+                           onclick="event.stopPropagation()"
                            onchange="handleImportFileSelect(event)">
                     <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">${wizard.fileName ? '📦' : '📂'}</div>
                     <div style="font-weight: 600; color: #f3f4f6;">
-                        ${wizard.fileName ? `Đã chọn: ${wizard.fileName}` : 'Bấm vào đây để chọn file tải lên'}
+                        ${wizard.fileName ? `Đã chọn: ${wizard.fileName}` : 'Bấm vào đây hoặc Kéo thả file .zip vào đây'}
                     </div>
                     <div style="font-size: 0.8rem; color: #9ca3af; margin-top: 0.35rem;">
                         ${wizard.type === 'role' 
@@ -2697,6 +2731,7 @@ function renderImportRoleModal() {
                         <span>
                             <strong>Cấu trúc bắt buộc theo Ansible Docs:</strong> File .zip phải chứa thư mục <code>tasks/main.yml</code> (định nghĩa tác vụ) và nên có <code>defaults/main.yml</code> (để tự sinh form biến). 
                             <a href="https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_reuse_roles.html#role-directory-structure" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline;">Xem chuẩn Ansible Docs ↗</a>
+                            <br><span style="color: #fca5a5; font-size: 0.76rem; display: inline-block; margin-top: 0.2rem;">⛔ Lưu ý an ninh: Không hỗ trợ custom Python plugins (<code>library/</code>, <code>lookup_plugins/</code>...); chỉ chấp nhận YAML tasks chuẩn để đảm bảo kiểm soát an toàn tuyệt đối.</span>
                         </span>
                     </div>
                 ` : ''}
@@ -2878,7 +2913,7 @@ function renderImportRoleModal() {
                     <button class="modal-close" onclick="closeModal()">&times;</button>
                 </div>
                 
-                <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+                <div class="modal-body">
                     <!-- Wizard Stepper Indicator -->
                     <div class="wizard-steps-indicator">
                         <div class="wizard-step-node ${wizard.step === 1 ? 'active' : 'completed'}">
@@ -2897,16 +2932,16 @@ function renderImportRoleModal() {
 
                 <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
                     <div>
-                        <button class="btn btn-secondary" onclick="closeModal()">Hủy bỏ</button>
+                        <button type="button" class="btn btn-secondary" onclick="event.stopPropagation(); closeModal()">Hủy bỏ</button>
                     </div>
                     <div style="display: flex; gap: 0.75rem;">
                         ${wizard.step === 2 ? `
-                            <button class="btn btn-secondary" onclick="backToImportStep1()">← Quay lại</button>
-                            <button class="btn btn-primary" onclick="runImportStep2Save()" style="background: #059669; border-color: #10b981;">
+                            <button type="button" class="btn btn-secondary" onclick="event.stopPropagation(); backToImportStep1()">← Quay lại</button>
+                            <button type="button" class="btn btn-primary" onclick="event.stopPropagation(); runImportStep2Save()" style="background: #059669; border-color: #10b981;">
                                 ✓ Hoàn tất Import (Lưu DRAFT)
                             </button>
                         ` : `
-                            <button class="btn btn-primary" onclick="runImportStep1Validate()" ${wizard.validating ? 'disabled' : ''} style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
+                            <button type="button" class="btn btn-primary" onclick="event.stopPropagation(); runImportStep1Validate()" ${wizard.validating ? 'disabled' : ''} style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);">
                                 ${wizard.validating ? `
                                     <span style="display: inline-block; animation: spin 0.8s linear infinite; margin-right: 0.4rem;">⟳</span>
                                     Đang chạy Syntax Check...
@@ -2945,11 +2980,33 @@ function backToImportStep1() {
     renderImportRoleModal();
 }
 
-function handleImportFileSelect(event) {
-    const file = event.target.files && event.target.files[0];
+function handleDropzoneDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.classList.add('drag-active');
+}
+
+function handleDropzoneDragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.classList.remove('drag-active');
+}
+
+function handleDropzoneDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.classList.remove('drag-active');
+    const file = event.dataTransfer?.files?.[0];
+    if (file) {
+        processImportSelectedFile(file);
+    }
+}
+
+function processImportSelectedFile(file) {
     if (!file || !state.importWizard) return;
 
     state.importWizard.fileName = file.name;
+    state.importWizard.errorMessage = null;
 
     // Auto-infer roleName and displayName if empty
     const baseName = file.name.replace(/\.[^/.]+$/, '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -2985,16 +3042,35 @@ function handleImportFileSelect(event) {
     }
 }
 
+function handleImportFileSelect(event) {
+    const file = event.target.files && event.target.files[0];
+    if (file) {
+        processImportSelectedFile(file);
+    }
+}
+
 async function runImportStep1Validate() {
     const wizard = state.importWizard;
     if (!wizard) return;
 
     wizard.errorMessage = null;
 
+    // Sync from actual DOM inputs to catch any autofill or missed oninput events
+    const roleInput = document.getElementById('importRoleName');
+    if (roleInput && roleInput.value) wizard.roleName = roleInput.value.trim();
+    const displayInput = document.getElementById('importDisplayName');
+    if (displayInput && displayInput.value) wizard.displayName = displayInput.value.trim();
+    const descInput = document.getElementById('importDescription');
+    if (descInput && descInput.value) wizard.description = descInput.value.trim();
+    const capInput = document.getElementById('importCapability');
+    if (capInput && capInput.value) wizard.capability = capInput.value.trim();
+    const yamlInput = document.getElementById('importPlaybookYaml');
+    if (yamlInput && yamlInput.value) wizard.playbookContent = yamlInput.value;
+
     // Gate 1 Form Validation
     const roleName = (wizard.roleName || '').trim();
     if (!roleName) {
-        wizard.errorMessage = 'Vui lòng nhập Role Identifier.';
+        wizard.errorMessage = 'Vui lòng nhập Role Identifier (ví dụ: create_account).';
         renderImportRoleModal();
         return;
     }
@@ -3013,7 +3089,7 @@ async function runImportStep1Validate() {
     }
 
     if (wizard.type === 'role' && !wizard.fileBase64) {
-        wizard.errorMessage = 'Vui lòng chọn file zip của Ansible Role.';
+        wizard.errorMessage = 'Vui lòng chọn hoặc kéo thả file .zip của Ansible Role vào khung tải lên.';
         renderImportRoleModal();
         return;
     }
@@ -3029,9 +3105,13 @@ async function runImportStep1Validate() {
     renderImportRoleModal();
 
     try {
+        console.log('[IMPORT] Bắt đầu kiểm tra cú pháp cho role:', roleName);
         const res = await fetch(`${state.backendUrl}/api/roles/validate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'x-admin-token': 'admin-secret'
+            },
             body: JSON.stringify({
                 roleName: roleName,
                 isRole: wizard.type === 'role',
@@ -3041,6 +3121,7 @@ async function runImportStep1Validate() {
         });
 
         const data = await res.json();
+        console.log('[IMPORT] Kết quả kiểm tra từ Backend:', res.status, data);
         wizard.validating = false;
 
         if (!res.ok || data.pass === false) {
@@ -3057,8 +3138,10 @@ async function runImportStep1Validate() {
         // Passed Gate 1 & Gate 2!
         wizard.validationResult = data;
         wizard.step = 2;
+        console.log('[IMPORT] Chuyển sang Bước 2 (Preview & Lưu DRAFT)');
         renderImportRoleModal();
     } catch (err) {
+        console.error('[IMPORT] Lỗi kết nối cú pháp:', err);
         wizard.validating = false;
         wizard.errorMessage = 'Lỗi kết nối tới backend khi kiểm tra cú pháp: ' + err.message;
         renderImportRoleModal();

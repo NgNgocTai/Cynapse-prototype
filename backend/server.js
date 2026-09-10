@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
+import crypto from 'crypto';
 import { runAnsiblePlaybook } from './ansibleRunner.js';
 import { calculateRisk, evaluatePolicy } from './policy.js';
 import { writeAudit, readAudit } from './audit.js';
@@ -42,6 +44,10 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROLE_TEMP_BASE = path.join(os.tmpdir(), 'synapse_roles');
+if (!fs.existsSync(ROLE_TEMP_BASE)) {
+  fs.mkdirSync(ROLE_TEMP_BASE, { recursive: true });
+}
 const app = express();
 const PORT = parseInt(process.env.PORT || '8000', 10);
 
@@ -273,17 +279,35 @@ app.delete('/api/actions/:id', (req, res) => {
  * Checks x-admin-token or Authorization: Bearer <token> against ADMIN_API_KEY.
  * If ADMIN_API_KEY is not configured (prototype/dev mode), logs audit warning and proceeds.
  */
+/**
+ * Timing-safe string comparison (prevents timing attacks on API key verification).
+ * crypto.timingSafeEqual THROWS if buffers differ in length — must check length first.
+ * Length comparison via !== is acceptable: length is not a secret, only content is.
+ */
+function safeCompare(a, b) {
+  const bufA = Buffer.from(a || '', 'utf8');
+  const bufB = Buffer.from(b || '', 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function adminAuthGuard(req, res, next) {
   const adminKey = process.env.ADMIN_API_KEY;
-  if (adminKey) {
-    const providedKey = req.headers['x-admin-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
-    if (!providedKey || providedKey !== adminKey) {
-      writeAudit('Security', req.params.id || 'system', 'anonymous', 'publish_rejected', 'forbidden',
-        'Cố gắng duyệt (Publish) Action nhưng thiếu hoặc sai Admin API Key.');
-      return res.status(403).json({
-        error: 'Truy cập bị từ chối: Yêu cầu quyền Quản trị viên (Admin) để Publish Action. Vui lòng cung cấp header x-admin-token hợp lệ.'
-      });
-    }
+  if (!adminKey) {
+    writeAudit('Security', req.params.id || 'system', 'anonymous', 'publish_rejected', 'misconfiguration',
+      'Lỗi cấu hình hệ thống: ADMIN_API_KEY chưa được thiết lập trên server. Từ chối yêu cầu Publish theo nguyên tắc Fail-Closed.');
+    return res.status(500).json({
+      error: 'Lỗi cấu hình an ninh: ADMIN_API_KEY chưa được thiết lập trong biến môi trường của server. Vui lòng liên hệ Quản trị viên hệ thống.'
+    });
+  }
+
+  const providedKey = req.headers['x-admin-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  if (!providedKey || !safeCompare(providedKey, adminKey)) {
+    writeAudit('Security', req.params.id || 'system', 'anonymous', 'publish_rejected', 'forbidden',
+      'Cố gắng duyệt (Publish) Action nhưng thiếu hoặc sai Admin API Key.');
+    return res.status(403).json({
+      error: 'Truy cập bị từ chối: Yêu cầu quyền Quản trị viên (Admin) để Publish Action. Vui lòng cung cấp header x-admin-token hợp lệ.'
+    });
   }
   next();
 }
@@ -299,6 +323,72 @@ app.post('/api/actions/:id/publish', adminAuthGuard, (req, res) => {
     `Action "${req.params.id}" published from DRAFT to PUBLISHED.`);
   res.json(result.action);
 });
+
+// ===========================
+// UPLOAD RATE-LIMITING & DRAFT GOVERNANCE
+// ===========================
+// NOTE: Rate-limit là biện pháp giảm nhẹ tạm thời cho môi trường single-user/local.
+// Nếu Synapse mở rộng ra network/multi-user thật, 2 endpoint /api/roles/import và
+// /api/roles/validate BẮT BUỘC cần AuthN tối thiểu (API key/session check) trước khi
+// coi là an toàn. Rate-limit KHÔNG thay thế AuthZ.
+
+const uploadRateLimits = new Map();
+const MAX_UPLOAD_REQUESTS_PER_MINUTE = parseInt(process.env.MAX_UPLOAD_PER_MIN || '30', 10);
+const MAX_PENDING_DRAFTS = 20; // System-wide cap on un-published DRAFTs
+const MAX_PENDING_DRAFTS_PER_IP = parseInt(process.env.MAX_PENDING_DRAFTS_PER_IP || '5', 10); // Per-IP/client cap
+const DRAFT_TTL_DAYS = 30;
+const DRAFT_TTL_MS = DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+function uploadRateLimit(req, res, next) {
+  if (process.env.RATE_LIMIT_DISABLED === 'true' || process.env.NODE_ENV === 'test') {
+    return next();
+  }
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey) {
+    const providedKey = req.headers['x-admin-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+    if (providedKey && safeCompare(providedKey, adminKey)) {
+      return next();
+    }
+  }
+
+  const clientIp = req.ip || 'client';
+  const now = Date.now();
+  const history = uploadRateLimits.get(clientIp) || [];
+  const recent = history.filter(ts => now - ts < 60000);
+  if (recent.length >= MAX_UPLOAD_REQUESTS_PER_MINUTE) {
+    writeAudit('Security', 'rate_limit', clientIp, 'upload_rate_exceeded', 'blocked',
+      `IP ${clientIp} vượt quá giới hạn upload (${MAX_UPLOAD_REQUESTS_PER_MINUTE}/phút).`);
+    return res.status(429).json({
+      error: `Rate limit: tối đa ${MAX_UPLOAD_REQUESTS_PER_MINUTE} request upload/phút. Vui lòng thử lại sau.`
+    });
+  }
+  recent.push(now);
+  uploadRateLimits.set(clientIp, recent);
+  next();
+}
+
+/**
+ * DRAFT TTL auto-cleanup: purge DRAFT actions older than DRAFT_TTL_DAYS.
+ * Prevents unbounded disk/catalog growth from roles imported but never published.
+ * Runs lazily on each import request + periodically via setInterval at server start.
+ */
+function cleanupStaleDrafts() {
+  const actions = listActions();
+  const now = Date.now();
+  let cleaned = 0;
+  for (const action of actions) {
+    if (action.status === 'DRAFT' && action.createdAt) {
+      const ageMs = now - new Date(action.createdAt).getTime();
+      if (ageMs > DRAFT_TTL_MS) {
+        deleteAction(action.id);
+        writeAudit('System', action.id, 'auto_cleanup', 'draft_ttl_expired', 'success',
+          `DRAFT action "${action.id}" tự động xóa sau ${Math.round(ageMs / (24 * 60 * 60 * 1000))} ngày không được publish.`);
+        cleaned++;
+      }
+    }
+  }
+  return cleaned;
+}
 
 // ===========================
 // ROLES & PLAYBOOKS IMPORT WIZARD API
@@ -318,7 +408,7 @@ app.get('/api/roles/template', (req, res) => {
 });
 
 // POST /api/roles/validate - Wizard Step 1: Check syntax and scan parameters
-app.post('/api/roles/validate', async (req, res) => {
+app.post('/api/roles/validate', uploadRateLimit, async (req, res) => {
   try {
     const roleName = req.body.roleName;
     const zipBase64 = req.body.zipBase64 || req.body.fileBase64;
@@ -335,7 +425,7 @@ app.post('/api/roles/validate', async (req, res) => {
         return res.status(400).json({ error: 'Thiếu dữ liệu file zip (zipBase64 hoặc fileBase64).' });
       }
 
-      const tmpValidationDir = path.join(__dirname, 'temp', `val_${Date.now()}`);
+      const tmpValidationDir = path.join(ROLE_TEMP_BASE, `val_${Date.now()}`);
       const tmpRoleDir = path.join(tmpValidationDir, nameVal.roleName);
       fs.mkdirSync(tmpRoleDir, { recursive: true });
 
@@ -392,7 +482,7 @@ app.post('/api/roles/validate', async (req, res) => {
         if (isPlaybookZip) {
           syntaxResult = await runSyntaxCheck({
             roleName: nameVal.roleName,
-            roleDir: path.join(__dirname, 'temp'),
+            roleDir: ROLE_TEMP_BASE,
             isRole: false,
             playbookContent: detectedPlaybookContent
           });
@@ -446,7 +536,7 @@ app.post('/api/roles/validate', async (req, res) => {
 
       const syntaxResult = await runSyntaxCheck({
         roleName: 'standalone_playbook',
-        roleDir: path.join(__dirname, 'temp'),
+        roleDir: ROLE_TEMP_BASE,
         isRole: false,
         playbookContent: yamlContent
       });
@@ -469,7 +559,7 @@ app.post('/api/roles/validate', async (req, res) => {
 });
 
 // POST /api/roles/import - Wizard Step 2: Save role and register action in catalog as DRAFT
-app.post('/api/roles/import', async (req, res) => {
+app.post('/api/roles/import', uploadRateLimit, async (req, res) => {
   try {
     const roleName = req.body.roleName;
     const zipBase64 = req.body.zipBase64 || req.body.fileBase64;
@@ -485,10 +575,27 @@ app.post('/api/roles/import', async (req, res) => {
     const autoCreateBlueprint = Boolean(req.body.autoCreateBlueprint ?? req.body.createBlueprint ?? false);
     const overwrite = Boolean(req.body.overwrite);
 
+    const clientIp = req.ip || 'client';
     const actor = req.headers['x-actor'] || req.body?.actor || 'operator';
 
     if (!actionId || !actionName) {
       return res.status(400).json({ error: 'actionId và actionName là bắt buộc.' });
+    }
+
+    // DRAFT governance: cap on system-wide and per-IP pending DRAFTs + lazy TTL cleanup
+    cleanupStaleDrafts();
+    const allDrafts = listActions().filter(a => a.status === 'DRAFT');
+    if (allDrafts.length >= MAX_PENDING_DRAFTS) {
+      return res.status(429).json({
+        error: `Đã đạt giới hạn hệ thống tối đa ${MAX_PENDING_DRAFTS} DRAFT action chưa duyệt. Vui lòng publish hoặc xóa DRAFT cũ trước khi import thêm.`
+      });
+    }
+
+    const ipDraftCount = allDrafts.filter(a => a.creatorIp === clientIp).length;
+    if (ipDraftCount >= MAX_PENDING_DRAFTS_PER_IP) {
+      return res.status(429).json({
+        error: `IP của bạn (${clientIp}) đã đạt giới hạn tối đa ${MAX_PENDING_DRAFTS_PER_IP} DRAFT action chưa duyệt. Vui lòng chờ Quản trị viên duyệt hoặc xóa bớt DRAFT cũ trước khi tạo mới.`
+      });
     }
 
     if (isRole) {
@@ -501,7 +608,7 @@ app.post('/api/roles/import', async (req, res) => {
         return res.status(400).json({ error: 'Thiếu dữ liệu file zip (zipBase64 hoặc fileBase64).' });
       }
 
-      const tmpInstallDir = path.join(__dirname, 'temp', `inst_${Date.now()}`);
+      const tmpInstallDir = path.join(ROLE_TEMP_BASE, `inst_${Date.now()}`);
       const tmpRoleDir = path.join(tmpInstallDir, nameVal.roleName);
       fs.mkdirSync(tmpRoleDir, { recursive: true });
 
@@ -543,7 +650,7 @@ app.post('/api/roles/import', async (req, res) => {
 
           const syntaxResult = await runSyntaxCheck({
             roleName: nameVal.roleName,
-            roleDir: path.join(__dirname, 'temp'),
+            roleDir: ROLE_TEMP_BASE,
             isRole: false,
             playbookContent: detectedPlaybookContent
           });
@@ -615,6 +722,7 @@ app.post('/api/roles/import', async (req, res) => {
             estimatedDurationSec: 60
           },
           status: 'DRAFT',
+          creatorIp: clientIp,
           overwrite: !!overwrite
         };
 
@@ -675,6 +783,7 @@ app.post('/api/roles/import', async (req, res) => {
           estimatedDurationSec: 60
         },
         status: 'DRAFT',
+        creatorIp: clientIp,
         overwrite: !!overwrite
       };
       const actionRes = addAction(actionPayload);
@@ -1167,12 +1276,21 @@ app.post('/api/changes/:id/resolve-plan', (req, res) => {
     } else {
       // Primitive Action Execution: synthesize an autonomous 1-step plan directly
       planBlueprintName = `${action.id}-primitive@1.0.0`;
+      const defaultActionInputs = {};
+      if (Array.isArray(action.inputs)) {
+        action.inputs.forEach(inp => {
+          if (inp.default !== undefined && inp.default !== '') defaultActionInputs[inp.name] = inp.default;
+        });
+      }
+      const override = (change.stepOverrides || []).find(o => o.stepIndex === 1 || o.action === action.id);
+      const stepInputs = { ...defaultActionInputs, ...((override && override.inputs) || {}) };
       planSteps = [{
         stepIndex: 1,
+        stepId: (action.id || 'action_1').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
         action: action.id,
         name: action.name || action.id,
         provider: 'ansible',
-        inputs: {}
+        inputs: stepInputs
       }];
     }
   }
@@ -1212,7 +1330,33 @@ async function runOrchestrator(executionId, plan, changeId) {
 
   const catalog = getCatalog();
   const bpName = plan.blueprint.split('@')[0];
-  const blueprint = catalog.blueprints.find(b => b.metadata.name === bpName) || catalog.blueprints[0];
+  let blueprint = catalog.blueprints.find(b => b.metadata.name === bpName);
+  if (!blueprint) {
+    const firstStepActionId = plan.steps && plan.steps[0] ? plan.steps[0].action : null;
+    const action = catalog.actions.find(a => a.id === firstStepActionId);
+    if (action) {
+      blueprint = {
+        apiVersion: 'synapse/v1alpha1',
+        kind: 'Blueprint',
+        metadata: {
+          name: bpName,
+          version: '1.0.0',
+          domain: action.domain || 'CNTT',
+          description: `Direct execution of action ${action.id}`
+        },
+        spec: {
+          steps: (plan.steps || []).map((s, idx) => ({
+            stepIndex: idx + 1,
+            stepId: s.stepId || `step_${idx + 1}`,
+            action: s.action,
+            inputs: s.inputs || {}
+          }))
+        }
+      };
+    } else {
+      blueprint = catalog.blueprints[0];
+    }
+  }
   const targetHosts = change.target || 'db_servers';
 
   // Build per-step overrides from plan.steps
@@ -1242,6 +1386,8 @@ async function runOrchestrator(executionId, plan, changeId) {
     if (stepId) {
       extraVars[stepId] = stepInputs;
     }
+    // Also flatten step inputs into top-level extraVars for direct role consumption
+    Object.assign(extraVars, stepInputs);
   }
 
   let effectiveCredId = change.credentialId;
@@ -1516,5 +1662,22 @@ app.get('/api/audit', (req, res) => {
 app.listen(PORT, () => {
   console.log(`✓ Synapse Backend running on http://localhost:${PORT}`);
   console.log(`✓ Ansible Direct Engine: Active (No AWX required)`);
+  console.log(`✓ DRAFT TTL auto-cleanup: ${DRAFT_TTL_DAYS} days, max ${MAX_PENDING_DRAFTS} total (${MAX_PENDING_DRAFTS_PER_IP}/IP)`);
+  console.log(`✓ Upload rate-limit: ${MAX_UPLOAD_REQUESTS_PER_MINUTE} req/min per IP`);
+  console.log(`✓ Admin AuthZ: Fail-Closed enforcement active`);
   console.log(`✓ Ready to accept requests from frontend`);
+
+  // Periodic DRAFT TTL cleanup (every 6 hours)
+  setInterval(() => {
+    const cleaned = cleanupStaleDrafts();
+    if (cleaned > 0) {
+      console.log(`[DRAFT CLEANUP] Auto-purged ${cleaned} stale DRAFT action(s).`);
+    }
+  }, 6 * 60 * 60 * 1000);
+
+  // Run initial cleanup on startup
+  const initialCleaned = cleanupStaleDrafts();
+  if (initialCleaned > 0) {
+    console.log(`[DRAFT CLEANUP] Startup: purged ${initialCleaned} stale DRAFT action(s).`);
+  }
 });

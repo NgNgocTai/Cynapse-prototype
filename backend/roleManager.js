@@ -43,7 +43,15 @@ const MAX_ENTRY_COUNT = 500;
 const SENSITIVE_PATTERNS = [/\.env$/i, /\.pem$/i, /\.key$/i, /id_rsa/i, /id_ed25519/i, /credentials\.json$/i, /vault_pass/i];
 
 export const ALLOWED_ROLE_SUBDIRS = new Set([
-  'tasks', 'defaults', 'vars', 'handlers', 'templates', 'files', 'meta', 'library', 'tests', 'lookup_plugins', 'filter_plugins'
+  'tasks', 'defaults', 'vars', 'handlers', 'templates', 'files', 'meta', 'tests'
+]);
+
+// Python plugin directories — rejected outright for self-service import.
+// Python is Turing-complete: no static analysis can reliably detect malicious code
+// (eval, pickle.loads, obfuscated payloads). Admin manual installation required.
+export const REJECTED_PLUGIN_DIRS = new Set([
+  'library', 'lookup_plugins', 'filter_plugins', 'module_utils',
+  'callback_plugins', 'connection_plugins', 'action_plugins', 'inventory_plugins'
 ]);
 
 export const ALLOWED_ROOT_FILES = new Set([
@@ -469,6 +477,16 @@ export function validateRoleDirectoryStructure(roleDir) {
     const lowerName = entry.name.toLowerCase();
 
     if (entry.isDirectory()) {
+      // BLOCK: Python plugin directories — cannot be safely audited via self-service
+      if (REJECTED_PLUGIN_DIRS.has(lowerName)) {
+        return {
+          valid: false,
+          error: `[CHẶN CỨNG] Role chứa thư mục custom Python plugin '${entry.name}/'. ` +
+            `Synapse Self-Service Import không hỗ trợ custom Python module/plugin vì không thể ` +
+            `kiểm toán an ninh mã Python tự động một cách tin cậy (ngôn ngữ Turing-complete). ` +
+            `Nếu thực sự cần custom module, hãy liên hệ Quản trị viên để thêm thủ công ngoài luồng Self-Service.`
+        };
+      }
       // Check against standard Ansible role directories
       if (ALLOWED_ROLE_SUBDIRS.has(lowerName)) {
         detectedSubdirs.push(entry.name);
@@ -580,7 +598,7 @@ export async function runSyntaxCheck({ roleName, roleDir, isRole = true, playboo
     };
   }
 
-  const tmpDir = path.join(__dirname, 'temp');
+  const tmpDir = path.join(os.tmpdir(), 'synapse_roles');
   if (!fs.existsSync(tmpDir)) {
     fs.mkdirSync(tmpDir, { recursive: true });
   }
@@ -745,13 +763,21 @@ export function extractParametersAndTasks(roleDir, isRole = true, rawYaml = null
     const tasksPath = path.join(roleDir, 'tasks', 'main.yml');
     if (fs.existsSync(tasksPath)) {
       const taskContent = fs.readFileSync(tasksPath, 'utf-8');
+      const internalFacts = new Set();
       try {
         const tasksDoc = yaml.load(taskContent);
         if (Array.isArray(tasksDoc)) {
           tasksDoc.forEach(t => {
-            if (t && t.name) {
-              const mod = Object.keys(t).find(k => k.includes('.') || ['debug', 'copy', 'template', 'service', 'command', 'shell', 'include_role'].includes(k)) || 'ansible';
-              detectedTasks.push({ name: t.name, module: mod });
+            if (t) {
+              if (t.name) {
+                const mod = Object.keys(t).find(k => k.includes('.') || ['debug', 'copy', 'template', 'service', 'command', 'shell', 'include_role'].includes(k)) || 'ansible';
+                detectedTasks.push({ name: t.name, module: mod });
+              }
+              if (t.register) internalFacts.add(String(t.register).trim());
+              const setFactObj = t.set_fact || t['ansible.builtin.set_fact'];
+              if (setFactObj && typeof setFactObj === 'object') {
+                Object.keys(setFactObj).forEach(k => internalFacts.add(k.trim()));
+              }
             }
           });
         }
@@ -763,7 +789,7 @@ export function extractParametersAndTasks(roleDir, isRole = true, rawYaml = null
       let match;
       while ((match = JINJA2_VAR_REGEX.exec(taskContent)) !== null) {
         const varName = match[1];
-        if (!IGNORED_ANSIBLE_VARS.has(varName) && !detectedVars.has(varName)) {
+        if (!IGNORED_ANSIBLE_VARS.has(varName) && !internalFacts.has(varName) && !detectedVars.has(varName)) {
           detectedVars.set(varName, {
             default: '',
             type: 'string'

@@ -1,0 +1,89 @@
+- name: "Step 1: Detect psql binary"
+  ansible.builtin.shell: "command -v psql"
+  register: detect_psql
+  changed_when: false
+  failed_when: false
+
+- name: "Validate psql binary presence"
+  ansible.builtin.assert:
+    that:
+      - detect_psql.rc == 0
+      - (detect_psql.stdout | trim | length) > 0
+    fail_msg: "psql binary not found"
+
+- name: "Set psql binary path fact"
+  ansible.builtin.set_fact:
+    psql_bin: "{{ detect_psql.stdout | trim }}"
+
+- name: "Step 2: Check database connectivity and standby status"
+  ansible.builtin.command:
+    argv:
+      - "{{ psql_bin }}"
+      - "-U"
+      - "{{ db_os_user | default('postgres') }}"
+      - "-d"
+      - "{{ db_name | default('postgres') }}"
+      - "-A"
+      - "-t"
+      - "-q"
+      - "-c"
+      - "select pg_is_in_recovery();"
+  register: check_recovery
+  changed_when: false
+  failed_when: false
+
+- name: "Handle database connection failure"
+  ansible.builtin.fail:
+    msg: "Failed to connect to the database. Error details: {{ check_recovery.stderr | default(check_recovery.stdout) | trim }}"
+  when: check_recovery.rc != 0
+
+- name: "Bypass execution on Standby node"
+  ansible.builtin.meta: end_host
+  when: (check_recovery.stdout | trim) == 't'
+
+- name: "Confirm Primary node identified"
+  ansible.builtin.debug:
+    msg: "Node {{ inventory_hostname }} is the Primary/Leader. Proceeding with account checks."
+
+- name: "Step 3 & 4: Check if database role exists"
+  ansible.builtin.command:
+    argv:
+      - "{{ psql_bin }}"
+      - "-U"
+      - "{{ db_os_user | default('postgres') }}"
+      - "-d"
+      - "{{ db_name | default('postgres') }}"
+      - "-A"
+      - "-t"
+      - "-q"
+      - "-c"
+      - "SELECT count(*) FROM pg_roles WHERE rolname = '{{ db_user }}';"
+  register: check_role_exists
+  changed_when: false
+
+- name: "Abort execution if role already exists"
+  ansible.builtin.fail:
+    msg: "User {{ db_user }} already exists"
+  when: (check_role_exists.stdout | trim) | int > 0
+
+- name: "Step 5: Create user via standard input"
+  ansible.builtin.command:
+    argv:
+      - "{{ psql_bin }}"
+      - "-U"
+      - "{{ db_os_user | default('postgres') }}"
+      - "-d"
+      - "{{ db_name | default('postgres') }}"
+      - "-q"
+    stdin: "CREATE USER \"{{ db_user }}\" WITH PASSWORD '{{ db_user_password }}';"
+  register: create_user_result
+  failed_when: false
+
+- name: "Handle user creation failure"
+  ansible.builtin.fail:
+    msg: "Failed to create user. Error details: {{ create_user_result.stderr | trim }}"
+  when: create_user_result.rc != 0
+
+- name: "Print user creation success summary"
+  ansible.builtin.debug:
+    msg: "User {{ db_user }} created successfully on {{ inventory_hostname }}"

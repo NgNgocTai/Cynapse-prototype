@@ -161,6 +161,8 @@ export function addAction(actionInput) {
     },
     riskDefault: actionInput.riskDefault || 'LOW',
     status: actionInput.status || 'DRAFT',
+    createdAt: actionInput.createdAt || new Date().toISOString(),
+    creatorIp: actionInput.creatorIp || null,
     ...(actionInput.parameters ? { parameters: actionInput.parameters } : {}),
     ...(actionInput.templateId ? { templateId: actionInput.templateId } : {})
   };
